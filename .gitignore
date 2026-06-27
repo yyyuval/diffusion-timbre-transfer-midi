@@ -1,2 +1,21 @@
 audio_diffusion_pytorch/basic-pitch-torch
 logs
+# Yuval local/generated files
+__pycache__/
+*.pyc
+venv_yuval/
+miniforge3/
+midi_cache_cello/
+midi_cache_cello_fps75/
+midi_cache_test/
+midi_outputs/
+checkpoints/
+our_checkpoints/
+outputs/
+Outputs/
+logs/
+*.log
+*.wav
+*.mid
+*.npy
+.vscode/

@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 import torch
 import torchaudio
 import wandb
+import torch.nn.functional as F
 from audio_data_pytorch.utils import fractional_random_split
 from audio_diffusion_pytorch import AudioDiffusionModel, AudioDiffusionConditional, Sampler, Schedule
 from einops import rearrange
@@ -22,6 +23,8 @@ from transformers import EncodecModel
 #DEFAULT_ENCODEC_MODEL = DEFAULT_ENCODEC_MODEL.to('cuda')
 import matplotlib.pyplot as plt
 import pandas as pd
+# 1 line added by shlomi
+from audio_data_pytorch.transforms.all import AddFifth
 
 """ Model """
 
@@ -100,6 +103,8 @@ class Model(pl.LightningModule):
         # Diffusion Model
         self.model = model
         self.sampling_rate = sampling_rate
+        #shloimi added 1 line: apply polyphonic fifth on GPU during training
+        self.add_fifth_transform = AddFifth(sample_rate=sampling_rate, fifth_gain=0.8)
         self.model_ema = EMA(self.model, beta=ema_beta, power=ema_power)
         # Text Encoder
         #self.embedder = embedder
@@ -184,6 +189,24 @@ class Model(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # batch = (waveforms, inst_label)
 
+        # shlomi added 3 lines: apply AddFifth on GPU
+        batch = list(batch)
+        batch[0] = self.add_fifth_transform(batch[0])
+        batch = tuple(batch)
+        #yuval add
+        if self.global_step == 0 and batch_idx == 0:
+            print("\n========== DEBUG SHAPES ==========")
+            print("type(batch):", type(batch))
+            print("len(batch):", len(batch))
+            print("batch[0] audio shape:", batch[0].shape)
+            print("batch[0] device:", batch[0].device)
+            print("batch[1] example:", batch[1][0] if len(batch) > 1 else None)
+            print("batch[2] wav path example:", batch[2][0] if len(batch) > 2 else None)
+            print("batch[3] midi shape before:", batch[3].shape if len(batch) > 3 else None)
+            print("==================================\n")
+        #yuval stop
+
+
         # if global step is a multiple of val_check_interval
         # This is to reduce the logging frequency for training
         if self.global_step % self.trainer.val_check_interval == 0:
@@ -193,9 +216,34 @@ class Model(pl.LightningModule):
 
         if self.latent == True:
             with torch.no_grad():
-                waveforms = self.encode_latent(batch[0])
+                if self.global_step == 0 and batch_idx == 0:
+                    print("DEBUG batch[0] audio shape before encode_latent:", batch[0].shape)
+                waveforms = self.encode_latent(batch[0]) 
+                #yuval add
+                if len(batch) > 3:
+                    midi = batch[3].float().to(waveforms.device)
+
+                    midi_resized = F.interpolate(
+                        midi,
+                        size=waveforms.shape[-1],
+                        mode="nearest"
+                    )
+
+                    if self.global_step == 0 and batch_idx == 0:
+                        print("DEBUG midi shape:", midi.shape)
+                        print("DEBUG midi resized shape:", midi_resized.shape)
+                        print("DEBUG midi unique:", torch.unique(midi_resized)[:10])
+                
+                if self.global_step == 0 and batch_idx == 0:
+                      print("\n========== DEBUG LATENT ==========")
+                      print("latent / z shape:", waveforms.shape)
+                      print("T_z:", waveforms.shape[-1])
+                      print("latent device:", waveforms.device)
+                      print("==================================\n")
+                      #yuval stop
                 
                 embedding = None 
+                
         elif self.latent == False:
             if self.cond == 'encodec':
                 embedding = self.encode_latent(batch[0])
@@ -242,6 +290,11 @@ class Model(pl.LightningModule):
         
 
     def validation_step(self, batch, batch_idx):
+        # shlomi added 3 lines: apply AddFifth on GPU
+        batch = list(batch)
+        batch[0] = self.add_fifth_transform(batch[0])
+        batch = tuple(batch)
+
         if self.latent == True:
             with torch.no_grad():
                 waveforms = self.encode_latent(batch[0])
@@ -442,6 +495,8 @@ class SampleLogger(Callback):
         self.num_items = num_items
         self.channels = channels
         self.sampling_rate = sampling_rate
+        # shlomi added 1 line: apply polyphonic fifth on GPU during training
+        self.add_fifth_transform = AddFifth(sample_rate=sampling_rate, fifth_gain=0.8)
         self.length = length
         self.sampling_steps = sampling_steps
         self.diffusion_schedule = diffusion_schedule
@@ -456,10 +511,13 @@ class SampleLogger(Callback):
             print("Please choose latent between True of False")
 
         self.log_next = False
-
     def on_validation_batch_start(
-        self, trainer, pl_module, batch, batch_idx, dataloader_idx
+        self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
     ):
+
+
+
+
         if self.log_next:
             self.log_sample(trainer, pl_module, batch)
             self.log_next = False
