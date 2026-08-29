@@ -1,4 +1,4 @@
-# Latent Diffusion Bridges for Unsupervised Musical Audio Timbre Transfer
+# latent Diffusion Bridges for Unsupervised Musical Audio Timbre Transfer
 
 This codebase is for the following [paper](https://arxiv.org/abs/2409.06096) with a corresponding [demo](https://sony.github.io/diffusion-timbre-transfer/) page.
 
