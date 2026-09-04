@@ -1122,5 +1122,7 @@ class XDiffusion(nn.Module):
                 else:
                     ax.set(title='Mel spectrogram')
                 writer.add_figure(f"{id}/mel_spectrogram_{idx}", fig, step)
-            else:
+                # Close the figure to free up memory
+                plt.close(fig) 
+            else:   
                 break
