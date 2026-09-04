@@ -1037,6 +1037,18 @@ class UNet1d(nn.Module):
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
         )
+        # Yuval add: MIDI gated conditioning
+        midi_hidden_channels = channels * multipliers[0]
+
+        self.midi_encoder = nn.Sequential(
+            nn.Conv1d(128, midi_hidden_channels, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(midi_hidden_channels, midi_hidden_channels, kernel_size=3, padding=1),
+        )
+
+        # Starts at zero, so the model initially behaves exactly like the original model
+        self.midi_gate = nn.Parameter(torch.zeros(1))
+        
 
         self.downsamples = nn.ModuleList(
             [
@@ -1150,6 +1162,8 @@ class UNet1d(nn.Module):
         features: Optional[Tensor] = None,
         channels_list: Optional[Sequence[Tensor]] = None,
         embedding: Optional[Tensor] = None,
+        #yuval add one line
+        midi: Optional[Tensor] = None,
         **kwargs,
     ) -> Tensor:
         channels = self.get_channels(channels_list, layer=0)
@@ -1161,7 +1175,21 @@ class UNet1d(nn.Module):
         mapping = self.get_mapping(time, features)
         
         x = self.to_in(x, mapping) 
+       
+        # Yuval add: apply MIDI gated conditioning after input projection
+        if midi is not None:
+            midi = midi.to(device=x.device, dtype=x.dtype)
+            
+            midi_features = self.midi_encoder(midi)
 
+            if midi_features.shape[-1] != x.shape[-1]:
+                midi_features = torch.nn.functional.interpolate(
+                    midi_features,
+                    size=x.shape[-1],
+                    mode="nearest",
+                )
+
+            x = x + self.midi_gate * midi_features
 
         skips_list = [x]
 

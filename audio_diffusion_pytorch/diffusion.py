@@ -392,14 +392,22 @@ class KDiffusion(Diffusion):
                 # obtain waveform from latent
                 x_noisy = decoder(x_noisy).float()
                 x_denoised = decoder(x_denoised).float()
-            
-            diff_self.log_tensorboard_audio(
-                writer=pl_self.logger.experiment,
-                id=f"{status}/x_noisy",
-                samples=x_noisy,
-                sampling_rate=pl_self.sampling_rate,
-                step=pl_self.global_step
-            )
+
+                def log_tensorboard_audio(self, writer, id, samples, sampling_rate, step):
+                    num_items = samples.shape[0]
+                    samples = samples.detach().cpu().numpy()
+                    for idx in range(num_items):
+                        if idx < 4:  # limit the examples to 4
+                            if hasattr(writer, "add_audio"):
+                                writer.add_audio(
+                                    f"{id}/sample_{idx}",
+                                    samples[idx],
+                                    step,
+                                    sample_rate=sampling_rate,
+                            )
+                        else:
+                            break
+
             diff_self.log_tensorboard_spectrogram(
                 writer=pl_self.logger.experiment,
                 id=f"{status}/x_noisy",
@@ -1089,17 +1097,32 @@ class XDiffusion(nn.Module):
             clamp=clamp,
         )
         return diffusion_sampler(noise, **kwargs)
-
+    # We use Wandb to log audio and spectrograms, but we can also use Tensorboard. The following methods are used to log audio and spectrograms to Tensorboard.
+    # def log_tensorboard_audio(self, writer, id, samples, sampling_rate, step):
+    #     num_items = samples.shape[0]
+    #     # samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+    #     samples = samples.detach().cpu().numpy()
+    #     for idx in range(num_items):
+    #         if idx < 4: # limit the examples to 4
+    #             writer.add_audio(f"{id}/sample_{idx}", samples[idx], step, sample_rate=sampling_rate)
+    #         else:
+    #             break
     def log_tensorboard_audio(self, writer, id, samples, sampling_rate, step):
         num_items = samples.shape[0]
         # samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
         samples = samples.detach().cpu().numpy()
         for idx in range(num_items):
-            if idx < 4: # limit the examples to 4
-                writer.add_audio(f"{id}/sample_{idx}", samples[idx], step, sample_rate=sampling_rate)
+            if idx < 4:  # Limit the examples to 4
+                if hasattr(writer, "add_audio"):
+                    writer.add_audio(f"{id}/sample_{idx}", samples[idx], step, sample_rate=sampling_rate)
             else:
                 break
+
     def log_tensorboard_spectrogram(self, writer, id, samples, sampling_rate, step, sigmas=None):
+        # Exit early if the writer doesn't support adding figures, avoiding wasted compute and memory leaks
+        if not hasattr(writer, "add_figure"):
+            return
+
         num_items = samples.shape[0]
         samples = samples.detach().cpu()
         transform = torchaudio.transforms.MelSpectrogram(
@@ -1112,15 +1135,23 @@ class XDiffusion(nn.Module):
         )
 
         for idx in range(num_items):
-            if idx < 4: # limit the examples to 4
+            if idx < 4:  # Limit the examples to 4
                 spectrogram = transform(samples[idx][0])
                 fig, ax = plt.subplots()
-                img = librosa.display.specshow(librosa.power_to_db(spectrogram), sr=sampling_rate, hop_length=512, ax=ax, x_axis='time', y_axis='mel')
-                # check if the variable sigmas exists
+                img = librosa.display.specshow(
+                    librosa.power_to_db(spectrogram),
+                    sr=sampling_rate,
+                    hop_length=512,
+                    ax=ax,
+                    x_axis='time',
+                    y_axis='mel',
+                )
+
                 if isinstance(sigmas, torch.Tensor):
                     ax.set(title=f'sigma={sigmas[idx]}')
                 else:
                     ax.set(title='Mel spectrogram')
+
                 writer.add_figure(f"{id}/mel_spectrogram_{idx}", fig, step)
                 # Close the figure to free up memory
                 plt.close(fig) 

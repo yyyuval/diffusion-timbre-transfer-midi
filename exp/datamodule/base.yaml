@@ -9,6 +9,9 @@ dataset:
     _target_: audio_data_pytorch.AllTransform
     random_crop_size: ${length}
     sign: ${sign}
+    # #yuval added 2 lines
+    # add_fifth: true
+    # fifth_gain: 0.8
 val_split: 0.2
 batch_size: 32
 num_workers: 32

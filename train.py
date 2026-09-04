@@ -1,4 +1,29 @@
 import os
+import sys
+# here we can change the instrument we want to train on, e.g. cello_latent, bassoon_latent, etc.
+# sys.argv += ["exp=cello_latent"]
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+
+sys.argv += [
+    "exp=bassoon_latent",
+    "trainer.max_epochs=1",
+    "datamodule.batch_size=16",
+    "datamodule.num_workers=8",
+    "+trainer.limit_train_batches=1",
+    "+trainer.limit_val_batches=0",
+    "exp_tag=bassoon_midi_addfifth_wandb_test_yuval",
+    "logs_dir=/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints",
+    "loggers.wandb.save_dir=/home/chenyuv/wandb_logs",
+]
+
+#sys.argv += [
+   # "exp=bassoon_latent",
+   # "trainer.max_epochs=100",
+   # "datamodule.batch_size=16",
+  #  "datamodule.num_workers=8",
+   # "exp_tag=bassoon_add_fifth_100_bs16_V1",
+   # "logs_dir=/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints",
+#]
 
 import dotenv
 import hydra
@@ -129,3 +154,4 @@ def main(config: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+

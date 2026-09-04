@@ -59,24 +59,12 @@ class WAVDataset(Dataset):
         ratio = 1 if (self.sample_rate is None) else sample_rate / self.sample_rate
         crop_size = length if (self.random_crop_size is None) else math.ceil(self.random_crop_size * ratio)  # type: ignore
         frame_offset = random.randint(0, max(length - crop_size, 0))
-        #yuval debug
-        print(
-        "DEBUG wav:",
-        self.wavs[idx],
-        "frame_offset:",
-        frame_offset,
-        "crop_size:",
-        crop_size,
-        "length:",
-        length,
-        )
-        #yuval stop
+      
         # Load the samples
         waveform, sample_rate = torchaudio.load(
             self.wavs[idx], frame_offset=frame_offset, num_frames=crop_size
         )
-        #yuval debug
-        print("DEBUG after torchaudio.load:", waveform.shape, "sample_rate:", sample_rate)
+       
 
         # check if waveform is stereo
         if waveform.shape[0] == 2:
@@ -96,20 +84,21 @@ class WAVDataset(Dataset):
     
     #yuval add func
     def get_midi_cache_path(self, wav_path: str) -> str:
-        """
-        Temporary MIDI cache mapping for debug.
-        Example:
-        .../main_dataset/string_track000534/stems_audio/4_cello.wav
-        -> midi_cache_test/string_track000534/4_cello_pianoroll.npy
-        """
         track_name = os.path.basename(os.path.dirname(os.path.dirname(wav_path)))
         file_name = os.path.splitext(os.path.basename(wav_path))[0]
 
+        if "cello" in file_name:
+            cache_root = "/home/shared_workspace/diffusion-timbre-transfer/midi_cache_cello_fps75_addfifth"
+        elif "bassoon" in file_name:
+            cache_root = "/home/shared_workspace/diffusion-timbre-transfer/midi_cache_bassoon_fps75_addfifth"
+        else:
+            raise ValueError(f"Unsupported instrument for MIDI cache: {file_name}")
+
         return os.path.join(
-        "/home/shared_workspace/diffusion-timbre-transfer/midi_cache_cello_fps75",
-        track_name,
-        f"{file_name}_pianoroll.npy"
-    )
+            cache_root,
+            track_name,
+            f"{file_name}_pianoroll.npy"
+        )
           
 
     def __getitem__(
@@ -138,8 +127,7 @@ class WAVDataset(Dataset):
                 # Read with optimized crop if needed
                 if hasattr(self, "random_crop_size"):
                     waveform, sample_rate = self.optimized_random_crop(int(idx))
-                    #yuval debug
-                    print("DEBUG after optimized_random_crop:", waveform.shape, "sample_rate:", sample_rate)
+                    
                 else:
                     waveform, sample_rate = torchaudio.load(self.wavs[idx])
             except Exception:
@@ -155,14 +143,12 @@ class WAVDataset(Dataset):
                 # Downsampling can result in slightly different sizes.
                 if hasattr(self, "random_crop_size"):
                     waveform = waveform[:, : self.random_crop_size]
-                #yuval debug    
-                print("DEBUG after resample block:", waveform.shape)
+                
 
             # Apply other transforms
             if self.transforms:
                 waveform = self.transforms(waveform)
-            #yuval debug
-            print("DEBUG after self.transforms:", waveform.shape)
+           
 
             # Check silence after transforms (useful for random crops)
             if self.check_silence and is_silence(waveform):
@@ -177,8 +163,7 @@ class WAVDataset(Dataset):
 
             #yuval add
             midi_path = self.get_midi_cache_path(self.wavs[idx])
-            print("DEBUG midi_path:", midi_path)
-            print("DEBUG midi exists:", os.path.exists(midi_path))
+            
 
             if os.path.exists(midi_path):
                 piano_roll = np.load(midi_path).astype(np.float32)
@@ -209,8 +194,6 @@ class WAVDataset(Dataset):
                 )
 
             piano_roll = torch.from_numpy(piano_roll)
-            print("DEBUG before return waveform:", waveform.shape)
-            print("DEBUG before return piano_roll:", piano_roll.shape)
 
             #yuval add self.wavs[idx],piano_roll for midi
             return waveform, instrument_name[2:], self.wavs[idx], piano_roll

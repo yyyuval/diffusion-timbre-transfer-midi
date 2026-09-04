@@ -19,3 +19,6 @@ logs/
 *.mid
 *.npy
 .vscode/
+__pycache__/
+*.pyc
+.env

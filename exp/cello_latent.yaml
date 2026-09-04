@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - model: latent
-  - loggers: tensorboard
+  - loggers: wandb
   - callbacks: base
   - trainer: full
   - datamodule: base
@@ -11,7 +11,7 @@ latent: True
 cond: False
 instruments: 
   - cello
-exp_name: 'sigma'
+exp_name: 'cello'
 sign: None
 
 sampling_rate: 24000
@@ -19,9 +19,17 @@ length: 409600
 latent_lenght: 1280
 channels: 1
 log_every_n_steps: 1000
-mean_path: 'mean_cello.pt'
-std_path: 'std_cello.pt'
+mean_path: '/home/shared_workspace/diffusion-timbre-transfer/checkpoints/mean_cello.pt'
+std_path: '/home/shared_workspace/diffusion-timbre-transfer/checkpoints/std_cello.pt'
+
 diffusion_sigma_data: 1
 sigma_min: 0.001 
 sigma_max: 5
 rho: 9.0
+
+# we add this:
+dataset_path: '/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset'
+exp_tag: 'cello_tiny_v2'
+logs_dir: '/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints'
+trainer:
+  devices: 1

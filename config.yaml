@@ -1,3 +1,4 @@
+#original config.yaml 
 defaults:
   - _self_
   - exp: null
@@ -21,3 +22,35 @@ hydra:
     dir: ${output_dir}/runs
   job:  
     chdir: True
+
+    
+# defaults:
+#   - _self_
+#   - exp: flute_latent
+#   - override hydra/hydra_logging: colorlog
+#   - override hydra/job_logging: colorlog
+
+# seed: 12345
+# train: True #changed from false
+# ignore_warnings: False
+# print_config: False # Prints tree with all configurations
+# work_dir: ${hydra:runtime.cwd}  # This is the root of the project
+# logs_dir: ${work_dir}/logs  # נתיב ישיר ללוגים
+# data_dir: ${work_dir}/data  # נתיב ישיר לדאטה
+# dataset_path: ${data_dir} # <--- השורה החדשה שהוספנו
+# exp_tag: ${now:%Y-%m-%d}/${now:%H-%M-%S}
+# output_dir: ${logs_dir}/${exp_tag}
+# ckpt_dir: ${output_dir}/ckpts
+# #ckpt: path_to_checkpoint
+# # Hydra experiment configs log dir
+# audio_path: "${hydra:runtime.cwd}/1.wav"
+# mean_path: "${hydra:runtime.cwd}/checkpoints/mean_tensor_enc_flute.pt"
+# std_path: "${hydra:runtime.cwd}/checkpoints/std_tensor_enc_flute.pt"
+# ckpt: "${hydra:runtime.cwd}/checkpoints/flute_sigmaMax_100.ckpt"
+
+# hydra:
+#   run:
+#     dir: ${output_dir}/runs
+#   job:  
+#     chdir: False
+

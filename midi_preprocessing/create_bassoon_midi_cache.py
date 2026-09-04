@@ -42,7 +42,7 @@ def run_basic_pitch(wav_path: Path, temp_midi_dir: Path) -> Path:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_root", type=str, required=True)
-    parser.add_argument("--cache_root", type=str, default="midi_cache_cello")
+    parser.add_argument("--cache_root", type=str, default="midi_cache_bassoon_fps75")
     parser.add_argument("--temp_midi_root", type=str, default="midi_outputs/cache_temp_midis")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--fps", type=int, default=50)
@@ -54,12 +54,12 @@ def main():
     cache_root = Path(args.cache_root)
     temp_midi_root = Path(args.temp_midi_root)
 
-    wav_files = sorted(dataset_root.glob("*/stems_audio/*_cello.wav"))
+    wav_files = sorted(dataset_root.glob("*/stems_audio/*_bassoon.wav"))
 
     if args.limit is not None:
         wav_files = wav_files[: args.limit]
 
-    print(f"Found {len(wav_files)} cello wav files")
+    print(f"Found {len(wav_files)} bassoon wav files")
 
     success = 0
     skipped = 0

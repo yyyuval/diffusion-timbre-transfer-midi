@@ -191,20 +191,9 @@ class Model(pl.LightningModule):
 
         # shlomi added 3 lines: apply AddFifth on GPU
         batch = list(batch)
-        batch[0] = self.add_fifth_transform(batch[0])
+        #batch[0] = self.add_fifth_transform(batch[0])
         batch = tuple(batch)
-        #yuval add
-        if self.global_step == 0 and batch_idx == 0:
-            print("\n========== DEBUG SHAPES ==========")
-            print("type(batch):", type(batch))
-            print("len(batch):", len(batch))
-            print("batch[0] audio shape:", batch[0].shape)
-            print("batch[0] device:", batch[0].device)
-            print("batch[1] example:", batch[1][0] if len(batch) > 1 else None)
-            print("batch[2] wav path example:", batch[2][0] if len(batch) > 2 else None)
-            print("batch[3] midi shape before:", batch[3].shape if len(batch) > 3 else None)
-            print("==================================\n")
-        #yuval stop
+       
 
 
         # if global step is a multiple of val_check_interval
@@ -216,31 +205,23 @@ class Model(pl.LightningModule):
 
         if self.latent == True:
             with torch.no_grad():
-                if self.global_step == 0 and batch_idx == 0:
-                    print("DEBUG batch[0] audio shape before encode_latent:", batch[0].shape)
-                waveforms = self.encode_latent(batch[0]) 
-                #yuval add
+                waveforms = self.encode_latent(batch[0])
+
+                # yuval add
+                midi_resized = None
+
                 if len(batch) > 3:
                     midi = batch[3].float().to(waveforms.device)
+                   
 
-                    midi_resized = F.interpolate(
-                        midi,
-                        size=waveforms.shape[-1],
-                        mode="nearest"
-                    )
-
-                    if self.global_step == 0 and batch_idx == 0:
-                        print("DEBUG midi shape:", midi.shape)
-                        print("DEBUG midi resized shape:", midi_resized.shape)
-                        print("DEBUG midi unique:", torch.unique(midi_resized)[:10])
-                
-                if self.global_step == 0 and batch_idx == 0:
-                      print("\n========== DEBUG LATENT ==========")
-                      print("latent / z shape:", waveforms.shape)
-                      print("T_z:", waveforms.shape[-1])
-                      print("latent device:", waveforms.device)
-                      print("==================================\n")
-                      #yuval stop
+                    if midi.shape[-1] != waveforms.shape[-1]:
+                        midi_resized = F.interpolate(
+                            midi,
+                            size=waveforms.shape[-1],
+                            mode="nearest"
+                        )
+                    else:
+                        midi_resized = midi
                 
                 embedding = None 
                 
@@ -268,7 +249,21 @@ class Model(pl.LightningModule):
         loss, losses, sigmas = self.model(
             waveforms,
             embedding=embedding,
-            pl_self = self)
+            midi=midi_resized,
+            pl_self = self
+            )
+        # Yuval add: log MIDI gate value
+        if hasattr(self.model.unet, "midi_gate"):
+            self.log(
+                "train/midi_gate",
+                self.model.unet.midi_gate.detach(),
+                prog_bar=True,
+                on_step=True,
+                on_epoch=False,
+            )
+
+            if self.global_step % 500 == 0:
+                print("midi_gate:", self.model.unet.midi_gate.item())
         self.log("train_loss", loss)
         # Update EMA model and log decay
         self.model_ema.update()
@@ -292,7 +287,7 @@ class Model(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         # shlomi added 3 lines: apply AddFifth on GPU
         batch = list(batch)
-        batch[0] = self.add_fifth_transform(batch[0])
+       # batch[0] = self.add_fifth_transform(batch[0])
         batch = tuple(batch)
 
         if self.latent == True:

@@ -1,0 +1,6 @@
+wandb:
+  _target_: pytorch_lightning.loggers.WandbLogger
+  project: "diffusion-timbre-transfer"
+  entity: "diffusion-timbre-transfer-Proj"
+  name: ${exp_tag}
+  save_dir: ${logs_dir}
