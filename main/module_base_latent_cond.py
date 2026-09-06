@@ -203,12 +203,13 @@ class Model(pl.LightningModule):
         else:
             self.log_next = False
 
+        # yuval add: default here, not inside the latent branch, so the
+        # non-latent paths below don't pass an unbound name to self.model(...)
+        midi_resized = None
+
         if self.latent == True:
             with torch.no_grad():
                 waveforms = self.encode_latent(batch[0])
-
-                # yuval add
-                midi_resized = None
 
                 if len(batch) > 3:
                     midi = batch[3].float().to(waveforms.device)
@@ -290,10 +291,27 @@ class Model(pl.LightningModule):
        # batch[0] = self.add_fifth_transform(batch[0])
         batch = tuple(batch)
 
+        midi_resized = None
+
         if self.latent == True:
             with torch.no_grad():
                 waveforms = self.encode_latent(batch[0])
-                
+
+                # yuval add: condition validation the same way as training.
+                # Without this, valid_loss is measured with MIDI switched off
+                # while train_loss has it on, so the two aren't comparable.
+                if len(batch) > 3:
+                    midi = batch[3].float().to(waveforms.device)
+
+                    if midi.shape[-1] != waveforms.shape[-1]:
+                        midi_resized = F.interpolate(
+                            midi,
+                            size=waveforms.shape[-1],
+                            mode="nearest"
+                        )
+                    else:
+                        midi_resized = midi
+
                 embedding = None 
                 
         elif self.latent == False:
@@ -321,6 +339,7 @@ class Model(pl.LightningModule):
         loss, losses, sigmas = self.model_ema(
             waveforms,
             embedding=embedding,
+            midi=midi_resized,
             pl_self = self)
 
         self.log("valid_loss", loss)

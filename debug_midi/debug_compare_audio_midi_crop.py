@@ -1,4 +1,6 @@
 from pathlib import Path
+import random
+
 import numpy as np
 import torch
 import torchaudio
@@ -27,6 +29,11 @@ target_sample_rate = 24000
 final_audio_samples = 409600
 midi_fps = 75
 
+# Where in the track to crop, in seconds.
+#   None -> pick at random, exactly like training does
+#   a number -> pin the window so you can re-inspect the same one
+crop_start_sec = None
+
 
 def midi_note_to_hz(note: int) -> float:
     return 440.0 * (2.0 ** ((note - 69) / 12.0))
@@ -46,18 +53,30 @@ if sr != target_sample_rate:
         new_freq=target_sample_rate,
     )(waveform)
 
-# crop like training: keep beginning
-waveform = waveform[:, :final_audio_samples]
+# Crop like training ACTUALLY does: from a random offset, not from the start.
+# WAVDataset.optimized_random_crop picks a uniform random frame_offset, so a
+# debug script that only ever checks offset 0 tests the one case where the
+# piano roll lines up by construction and cannot see a misalignment bug.
+max_start_sample = max(waveform.shape[-1] - final_audio_samples, 0)
+
+if crop_start_sec is None:
+    start_sample = random.randint(0, max_start_sample)
+else:
+    start_sample = min(int(round(crop_start_sec * target_sample_rate)), max_start_sample)
+
+waveform = waveform[:, start_sample:start_sample + final_audio_samples]
 
 # if shorter, pad
 if waveform.shape[-1] < final_audio_samples:
     pad = final_audio_samples - waveform.shape[-1]
     waveform = torch.nn.functional.pad(waveform, (0, pad))
 
+crop_start_sec = start_sample / target_sample_rate
 audio_duration_sec = waveform.shape[-1] / target_sample_rate
 
 print("audio shape:", waveform.shape)
 print("audio duration:", audio_duration_sec)
+print("crop start:", round(crop_start_sec, 3), "sec")
 
 # save audio crop that the model actually sees
 torchaudio.save(
@@ -71,10 +90,11 @@ print("saved audio crop:", out_audio_crop_path)
 # ===== load MIDI piano roll =====
 piano_roll = np.load(midi_path).astype(np.float32)
 
+midi_start = int(round(crop_start_sec * midi_fps))
 target_midi_frames = int(round(audio_duration_sec * midi_fps))
 
-# crop MIDI to same duration as the audio crop
-piano_roll_crop = piano_roll[:, :target_midi_frames]
+# Crop MIDI to the same WINDOW as the audio -- same offset, same duration.
+piano_roll_crop = piano_roll[:, midi_start:midi_start + target_midi_frames]
 
 # pad MIDI if needed
 if piano_roll_crop.shape[1] < target_midi_frames:
@@ -88,6 +108,13 @@ if piano_roll_crop.shape[1] < target_midi_frames:
 
 print("full MIDI shape:", piano_roll.shape)
 print("cropped MIDI shape:", piano_roll_crop.shape)
+print("MIDI start frame:", midi_start)
+
+# Show how far off the old frame-0 slice was for this window.
+old_crop = piano_roll[:, :target_midi_frames]
+if old_crop.shape == piano_roll_crop.shape:
+    disagree = float(np.mean(old_crop != piano_roll_crop))
+    print("frames differing from the old frame-0 slice: %.1f%%" % (100.0 * disagree))
 print("target_midi_frames:", target_midi_frames)
 
 # ===== export cropped piano roll to MIDI file =====
@@ -190,7 +217,10 @@ axes[0].imshow(
     aspect="auto",
     extent=extent_spec,
 )
-axes[0].set_title("Audio spectrogram after training crop")
+axes[0].set_title(
+    "Audio spectrogram, crop @ %.2f-%.2f sec"
+    % (crop_start_sec, crop_start_sec + audio_duration_sec)
+)
 axes[0].set_ylabel("Frequency [Hz]")
 axes[0].set_ylim(0, 3000)
 
@@ -203,7 +233,8 @@ axes[1].imshow(
     extent=extent_midi,
     interpolation="nearest",
 )
-axes[1].set_title("Cropped MIDI piano roll")
+axes[1].set_title("MIDI piano roll for the SAME window (frames %d-%d)"
+                  % (midi_start, midi_start + target_midi_frames))
 axes[1].set_xlabel("Time [sec]")
 axes[1].set_ylabel("MIDI note")
 axes[1].set_ylim(30, 90)

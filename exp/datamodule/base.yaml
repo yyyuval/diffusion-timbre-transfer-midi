@@ -5,6 +5,12 @@ dataset:
   instruments: ${instruments}
   path: ${dataset_path}
   sample_rate: ${sampling_rate}
+  # Crop in the dataset (not only in AllTransform) so it knows WHERE the crop
+  # started and can slice the MIDI piano roll to the same window. The RandomCrop
+  # inside transforms then sees an already-correct length and is a no-op; it
+  # still zero-pads tracks shorter than ${length}.
+  random_crop_size: ${length}
+  midi_fps: 75
   transforms:
     _target_: audio_data_pytorch.AllTransform
     random_crop_size: ${length}

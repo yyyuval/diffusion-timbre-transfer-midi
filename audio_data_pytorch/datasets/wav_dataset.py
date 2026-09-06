@@ -34,6 +34,7 @@ class WAVDataset(Dataset):
         random_crop_size: int = None,
         check_silence: bool = True,
         with_ID3: bool = False,
+        midi_fps: int = 75,
     ):
         self.paths = path if isinstance(path, (list, tuple)) else [path]
         self.wavs = get_all_wav_filenames(self.paths, recursive=recursive, instruments=instruments)
@@ -42,13 +43,17 @@ class WAVDataset(Dataset):
         self.check_silence = check_silence
         self.with_ID3 = with_ID3
         self.random_crop_size = random_crop_size
+        # Frame rate the cached piano rolls were rendered at. Must match the
+        # --fps the midi_cache_* dirs were built with -- they are named for it
+        # (midi_cache_cello_fps75_addfifth), but the cache scripts default to 50.
+        self.midi_fps = midi_fps
         assert (
             not random_crop_size or sample_rate
         ), "Optimized random crop requires sample_rate to be set."
 
     # Instead of loading the whole file and chopping out our crop,
     # we only load what we need.
-    def optimized_random_crop(self, idx: int) -> Tuple[Tensor, int]:
+    def optimized_random_crop(self, idx: int) -> Tuple[Tensor, int, float]:
         # Get length/audio info
         info = torchaudio.info(self.wavs[idx])
         length = info.num_frames
@@ -59,7 +64,11 @@ class WAVDataset(Dataset):
         ratio = 1 if (self.sample_rate is None) else sample_rate / self.sample_rate
         crop_size = length if (self.random_crop_size is None) else math.ceil(self.random_crop_size * ratio)  # type: ignore
         frame_offset = random.randint(0, max(length - crop_size, 0))
-      
+
+        # Where in the track this crop starts. Returned so callers can align
+        # other per-track data (the MIDI piano roll) to the same window.
+        crop_start_sec = frame_offset / info.sample_rate
+
         # Load the samples
         waveform, sample_rate = torchaudio.load(
             self.wavs[idx], frame_offset=frame_offset, num_frames=crop_size
@@ -80,7 +89,7 @@ class WAVDataset(Dataset):
                 value=0,
             )
 
-        return waveform, sample_rate
+        return waveform, sample_rate, crop_start_sec
     
     #yuval add func
     def get_midi_cache_path(self, wav_path: str) -> str:
@@ -126,10 +135,11 @@ class WAVDataset(Dataset):
 
                 # Read with optimized crop if needed
                 if hasattr(self, "random_crop_size"):
-                    waveform, sample_rate = self.optimized_random_crop(int(idx))
+                    waveform, sample_rate, crop_start_sec = self.optimized_random_crop(int(idx))
                     
                 else:
                     waveform, sample_rate = torchaudio.load(self.wavs[idx])
+                    crop_start_sec = 0.0
             except Exception:
                 invalid_audio = True
                 continue
@@ -170,18 +180,21 @@ class WAVDataset(Dataset):
             else:
                 piano_roll = np.zeros((128, 1), dtype=np.float32)
 
-            # Yuval add: crop MIDI to match the final audio duration
-            midi_fps = 75
-
+            # Yuval add: crop MIDI to match the audio crop -- the same WINDOW of
+            # the track, not merely the same duration. optimized_random_crop
+            # starts at a random offset, so slicing the roll from frame 0 would
+            # condition the model on a different part of the track than the
+            # audio it is denoising.
             if self.sample_rate is not None:
                 audio_duration_sec = waveform.shape[-1] / self.sample_rate
             else:
                 # fallback, but in our training self.sample_rate should be 24000
                 audio_duration_sec = waveform.shape[-1] / 24000
 
-            target_midi_frames = int(round(audio_duration_sec * midi_fps))
+            midi_start = int(round(crop_start_sec * self.midi_fps))
+            target_midi_frames = int(round(audio_duration_sec * self.midi_fps))
 
-            piano_roll = piano_roll[:, :target_midi_frames]
+            piano_roll = piano_roll[:, midi_start : midi_start + target_midi_frames]
 
             # If MIDI is shorter than needed, pad with zeros
             if piano_roll.shape[1] < target_midi_frames:
