@@ -47,6 +47,7 @@ class Model(pl.LightningModule):
         cond: bool = False,
         encodec_model: str = 'facebook/encodec_24khz',
         sampling_rate: int = 24000,
+        use_midi: bool = True,
         #embedder: nn.Module
         #encodec_model: EncodecModel = DEFAULT_ENCODEC_MODEL
         
@@ -103,6 +104,9 @@ class Model(pl.LightningModule):
         # Diffusion Model
         self.model = model
         self.sampling_rate = sampling_rate
+        # False = unconditioned baseline: midi is never passed, so the gated
+        # block in UNet1d is skipped entirely rather than being fed zeros.
+        self.use_midi = use_midi
         #shloimi added 1 line: apply polyphonic fifth on GPU during training
         self.add_fifth_transform = AddFifth(sample_rate=sampling_rate, fifth_gain=0.8)
         self.model_ema = EMA(self.model, beta=ema_beta, power=ema_power)
@@ -211,7 +215,7 @@ class Model(pl.LightningModule):
             with torch.no_grad():
                 waveforms = self.encode_latent(batch[0])
 
-                if len(batch) > 3:
+                if len(batch) > 3 and self.use_midi:
                     midi = batch[3].float().to(waveforms.device)
                    
 
@@ -265,6 +269,19 @@ class Model(pl.LightningModule):
 
             if self.global_step % 500 == 0:
                 print("midi_gate:", self.model.unet.midi_gate.item())
+
+        # How large the MIDI term actually is next to x. This is the number that
+        # says whether conditioning is doing anything -- the gate alone does not,
+        # because the scale of midi_encoder's output is unknown.
+        midi_rel = getattr(self.model.unet, "_midi_rel", None)
+        if midi_rel is not None:
+            self.log(
+                "train/midi_rel_magnitude",
+                midi_rel,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=False,
+            )
         self.log("train_loss", loss)
         # Update EMA model and log decay
         self.model_ema.update()
@@ -300,7 +317,7 @@ class Model(pl.LightningModule):
                 # yuval add: condition validation the same way as training.
                 # Without this, valid_loss is measured with MIDI switched off
                 # while train_loss has it on, so the two aren't comparable.
-                if len(batch) > 3:
+                if len(batch) > 3 and self.use_midi:
                     midi = batch[3].float().to(waveforms.device)
 
                     if midi.shape[-1] != waveforms.shape[-1]:

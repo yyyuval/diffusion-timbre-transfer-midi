@@ -12,6 +12,8 @@ dataset:
   random_crop_size: ${length}
   midi_fps: 75
   midi_cache_root: ${midi_cache_root}
+  # true pairs each clip with another track's roll (the control condition)
+  midi_shuffle: false
   transforms:
     _target_: audio_data_pytorch.AllTransform
     random_crop_size: ${length}

@@ -36,6 +36,7 @@ class WAVDataset(Dataset):
         with_ID3: bool = False,
         midi_fps: int = 75,
         midi_cache_root: Optional[str] = None,
+        midi_shuffle: bool = False,
     ):
         self.paths = path if isinstance(path, (list, tuple)) else [path]
         self.wavs = get_all_wav_filenames(self.paths, recursive=recursive, instruments=instruments)
@@ -52,6 +53,10 @@ class WAVDataset(Dataset):
         # run can be pointed at a different source (ground truth vs basic-pitch,
         # with or without the added fifth) without editing code.
         self.midi_cache_root = midi_cache_root
+        # Control condition: pair each clip with a roll from a DIFFERENT track.
+        # Same format, same density, wrong notes. If the gate still climbs under
+        # this, gate movement is not evidence the model reads the notes.
+        self.midi_shuffle = midi_shuffle
         assert (
             not random_crop_size or sample_rate
         ), "Optimized random crop requires sample_rate to be set."
@@ -179,7 +184,13 @@ class WAVDataset(Dataset):
             instrument_name = os.path.splitext(os.path.basename(self.wavs[idx]))[0]
 
             #yuval add
-            midi_path = self.get_midi_cache_path(self.wavs[idx])
+            midi_idx = idx
+            if self.midi_shuffle and len(self.wavs) > 1:
+                midi_idx = random.randrange(len(self.wavs))
+                while midi_idx == idx:
+                    midi_idx = random.randrange(len(self.wavs))
+
+            midi_path = self.get_midi_cache_path(self.wavs[midi_idx])
             
 
             if os.path.exists(midi_path):
@@ -198,8 +209,18 @@ class WAVDataset(Dataset):
                 # fallback, but in our training self.sample_rate should be 24000
                 audio_duration_sec = waveform.shape[-1] / 24000
 
-            midi_start = int(round(crop_start_sec * self.midi_fps))
             target_midi_frames = int(round(audio_duration_sec * self.midi_fps))
+
+            if self.midi_shuffle:
+                # Take a window from wherever this other track actually has
+                # notes, rather than at this clip's offset -- a short track
+                # sliced at a large offset would come back mostly zeros, which
+                # is the no-MIDI condition, not the wrong-MIDI one.
+                midi_start = random.randint(
+                    0, max(piano_roll.shape[1] - target_midi_frames, 0)
+                )
+            else:
+                midi_start = int(round(crop_start_sec * self.midi_fps))
 
             piano_roll = piano_roll[:, midi_start : midi_start + target_midi_frames]
 

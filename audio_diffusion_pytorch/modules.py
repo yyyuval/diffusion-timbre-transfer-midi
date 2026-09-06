@@ -1048,6 +1048,12 @@ class UNet1d(nn.Module):
 
         # Starts at zero, so the model initially behaves exactly like the original model
         self.midi_gate = nn.Parameter(torch.zeros(1))
+
+        # Last measured size of the MIDI contribution relative to x. The gate
+        # value alone says nothing, because the scale of midi_encoder's output
+        # is unknown -- a gate of 0.2 on a tiny feature is still no conditioning.
+        # Detached, read by Model.training_step for logging only.
+        self._midi_rel = None
         
 
         self.downsamples = nn.ModuleList(
@@ -1189,7 +1195,11 @@ class UNet1d(nn.Module):
                     mode="nearest",
                 )
 
-            x = x + self.midi_gate * midi_features
+            midi_contrib = self.midi_gate * midi_features
+            self._midi_rel = (
+                midi_contrib.detach().norm() / (x.detach().norm() + 1e-8)
+            )
+            x = x + midi_contrib
 
         skips_list = [x]
 

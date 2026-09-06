@@ -12,6 +12,8 @@ latent: ${latent}
 cond: ${cond}
 mean_path: ${mean_path}
 std_path: ${std_path}
+# false = unconditioned baseline; midi is never passed to the UNet
+use_midi: true
 
 model:
   _target_: audio_diffusion_pytorch.AudioDiffusionModel #AudioDiffusionConditional for conditional models, #AudioDiffusionModel for non conditional models
