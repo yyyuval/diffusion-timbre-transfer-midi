@@ -389,6 +389,42 @@ Two related issues fixed at the same time:
 
 *Consequence.* Any MIDI-conditioned checkpoint trained before 2026-09-06 was trained on noise conditioning and should be discarded.
 
+**Bug 11 — `model.use_midi=false` crashes under DDP.**
+The unconditioned baseline never passes `midi`, so the gated block in `UNet1d.forward` never runs and `midi_encoder` / `midi_gate` produce no gradient. `exp/trainer/full.yaml` sets `find_unused_parameters: False`, and DDP refuses:
+`RuntimeError: It looks like your LightningModule has parameters that were not used in producing the loss`
+Fix: add `trainer.strategy.find_unused_parameters=true` to that run (no `+` prefix — the key already exists). It only changes DDP's gradient-sync bookkeeping, not the math, and at `devices: 1` there is no sync happening anyway. Only the baseline needs it.
+
+> Worth fixing properly at some point: either default that flag to `true`, or stop using DDPStrategy for single-GPU runs, where it is pure overhead.
+
+---
+
+## 🔬 Is the MIDI conditioning actually doing anything?
+
+Three switches exist to answer this. All default to the normal path, so ordinary runs are unaffected.
+
+| Override | Effect |
+|---|---|
+| `midi_cache_root=<path>` | which roll cache to read — ground truth, basic-pitch, with or without the fifth |
+| `datamodule.dataset.midi_shuffle=true` | **control**: pair each clip with a roll from a *different* track. Same format, same density, wrong notes. The window is drawn from within that track's own length, so a short track does not come back mostly zeros — that would be the no-MIDI condition, not the wrong-MIDI one |
+| `model.use_midi=false` | **baseline**: `midi` is never passed, so the gated block is skipped entirely rather than fed zeros (see Bug 11) |
+
+### The two metrics
+
+- **`train/midi_gate`** — the learned scalar, starts at 0. Movement means the model is turning the channel up.
+- **`train/midi_rel_magnitude`** — `norm(gate * midi_features) / norm(x)`. **This is the one that matters.** The gate alone is uninterpretable because the scale of `midi_encoder`'s output is unknown: a gate of 0.2 on a tiny feature is still no conditioning.
+
+### Findings so far (5-epoch runs, 2026-09-06)
+
+Cello and bassoon, ground truth vs basic-pitch, no fifth, ~2,500 steps each:
+
+- **The gate moves decisively.** Bassoon reached **+0.18** (basic-pitch) and **−0.22** (ground truth), smooth and monotonic from ~step 400, neither plateauing. The ~400-step flat start is the bootstrap: while the gate is 0, `midi_encoder` receives no gradient, so the encoder has to be nudged into usefulness by a gate that is itself only reacting to a random projection. It escapes, but slowly.
+- **Sign is meaningless.** Gate and encoder are learned jointly, so `(+g, f)` and `(−g, −f)` are the same function. Compare magnitudes, not signs.
+- **`train_loss` was identical between the two sources.** The MIDI source changes nothing measurable in the loss.
+- **The envelope hypothesis is ruled out.** Ground truth sits at 0.99 notes/frame (strictly monophonic, essentially always sounding); basic-pitch at 1.17–1.44, stacking its hallucinated octaves into the *same* time columns (frame counts differ by only 2–5%). Both mark ~95–99% of frames active, so "is a note sounding" carries almost no information — there is nothing there for the model to learn from.
+- **Leading hypothesis: the Encodec latent already encodes pitch**, so the conditioning is largely redundant. The model turns the gate up because it is not harmful, but cannot reduce the loss with information it already had.
+
+The 40-epoch runs (`bassoon_{gt,bp,scrambled,nomidi}_40ep`) test this: if the scrambled gate climbs like the real one, gate movement is not evidence the model reads notes; if `gt` beats `nomidi` on `valid_loss`, conditioning helps at all.
+
 ---
 
 ## 🚀 Training
