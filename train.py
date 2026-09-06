@@ -1,20 +1,27 @@
 import os
 import sys
-# here we can change the instrument we want to train on, e.g. cello_latent, bassoon_latent, etc.
-# sys.argv += ["exp=cello_latent"]
-os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 
-sys.argv += [
-    "exp=bassoon_latent",
-    "trainer.max_epochs=1",
-    "datamodule.batch_size=16",
-    "datamodule.num_workers=8",
-    "+trainer.limit_train_batches=1",
-    "+trainer.limit_val_batches=0",
-    "exp_tag=bassoon_midi_addfifth_wandb_test_yuval",
-    "logs_dir=/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints",
-    "loggers.wandb.save_dir=/home/chenyuv/wandb_logs",
-]
+# CUDA_VISIBLE_DEVICES has to be set before torch is imported or it is ignored.
+# setdefault, not assignment, so the caller can choose the GPU per run:
+#     CUDA_VISIBLE_DEVICES=1 python train.py exp=cello_latent ...
+# Whichever physical GPU is picked always appears to this process as cuda:0.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "6")
+
+# Hydra overrides are taken from the command line whenever any are supplied, so
+# several runs can share this file and differ only by their launch command --
+# no more editing this block between runs, which does not work when four of them
+# are meant to run at once. The list below is just the fallback for a bare
+# `python train.py`.
+if len(sys.argv) == 1:
+    sys.argv += [
+        "exp=bassoon_latent",
+        "trainer.max_epochs=100",
+        "datamodule.batch_size=16",
+        "datamodule.num_workers=8",
+        "exp_tag=bassoon_default",
+        "logs_dir=/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints",
+        "loggers.wandb.save_dir=/home/chenyuv/wandb_logs",
+    ]
 
 #sys.argv += [
    # "exp=bassoon_latent",

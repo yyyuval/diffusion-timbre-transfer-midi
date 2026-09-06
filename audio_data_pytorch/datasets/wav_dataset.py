@@ -35,6 +35,7 @@ class WAVDataset(Dataset):
         check_silence: bool = True,
         with_ID3: bool = False,
         midi_fps: int = 75,
+        midi_cache_root: Optional[str] = None,
     ):
         self.paths = path if isinstance(path, (list, tuple)) else [path]
         self.wavs = get_all_wav_filenames(self.paths, recursive=recursive, instruments=instruments)
@@ -47,6 +48,10 @@ class WAVDataset(Dataset):
         # --fps the midi_cache_* dirs were built with -- they are named for it
         # (midi_cache_cello_fps75_addfifth), but the cache scripts default to 50.
         self.midi_fps = midi_fps
+        # Which piano-roll cache to read. Set from exp/datamodule/base.yaml so a
+        # run can be pointed at a different source (ground truth vs basic-pitch,
+        # with or without the added fifth) without editing code.
+        self.midi_cache_root = midi_cache_root
         assert (
             not random_crop_size or sample_rate
         ), "Optimized random crop requires sample_rate to be set."
@@ -93,18 +98,20 @@ class WAVDataset(Dataset):
     
     #yuval add func
     def get_midi_cache_path(self, wav_path: str) -> str:
+        if self.midi_cache_root is None:
+            raise ValueError(
+                "midi_cache_root is not set. Point it at a piano-roll cache in "
+                "exp/datamodule/base.yaml, or override midi_cache_root=... on "
+                "the command line. It used to be hardcoded per instrument, which "
+                "made it impossible to switch MIDI source without editing code -- "
+                "and silently paired plain audio with the +fifth rolls."
+            )
+
         track_name = os.path.basename(os.path.dirname(os.path.dirname(wav_path)))
         file_name = os.path.splitext(os.path.basename(wav_path))[0]
 
-        if "cello" in file_name:
-            cache_root = "/home/shared_workspace/diffusion-timbre-transfer/midi_cache_cello_fps75_addfifth"
-        elif "bassoon" in file_name:
-            cache_root = "/home/shared_workspace/diffusion-timbre-transfer/midi_cache_bassoon_fps75_addfifth"
-        else:
-            raise ValueError(f"Unsupported instrument for MIDI cache: {file_name}")
-
         return os.path.join(
-            cache_root,
+            self.midi_cache_root,
             track_name,
             f"{file_name}_pianoroll.npy"
         )

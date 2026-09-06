@@ -28,6 +28,7 @@ rho: 9.0
 
 # we add this:
 dataset_path: '/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset'
+midi_cache_root: '/home/shared_workspace/diffusion-timbre-transfer/midi_cache_bassoon_fps75'
 exp_tag: 'bassoon_tiny_v2'
 logs_dir: '/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints'
 trainer:

@@ -11,6 +11,7 @@ dataset:
   # still zero-pads tracks shorter than ${length}.
   random_crop_size: ${length}
   midi_fps: 75
+  midi_cache_root: ${midi_cache_root}
   transforms:
     _target_: audio_data_pytorch.AllTransform
     random_crop_size: ${length}
