@@ -558,16 +558,26 @@ class SampleLogger(Callback):
             print("Please choose latent between True of False")
 
         self.log_next = False
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        # Without this the callback never fires. log_next was initialised to
+        # False in __init__ and nothing ever set it True, so log_sample() had
+        # never once run -- no run has ever produced audio samples.
+        self.log_next = True
+
     def on_validation_batch_start(
         self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
     ):
-
-
-
-
         if self.log_next:
-            self.log_sample(trainer, pl_module, batch)
             self.log_next = False
+            # Sampling is expensive and a failure here must never take the
+            # training run down with it -- this is a logging callback.
+            try:
+                self.log_sample(trainer, pl_module, batch)
+            except Exception as e:
+                print("SampleLogger skipped this validation: %r" % (e,))
+                if pl_module.training is False:
+                    pl_module.train()
 
     @torch.no_grad()
     def log_sample(self, trainer, pl_module, batch):
@@ -575,15 +585,12 @@ class SampleLogger(Callback):
         if is_train:
             pl_module.eval()
 
-        # Check if trainer.logger is a single logger or a collection
-        if isinstance(trainer.logger, TensorBoardLogger):
-            tensorboard_logger = trainer.logger
-        # elif isinstance(trainer.logger, LoggerCollection):
-        #     tensorboard_logger = [logger for logger in trainer.logger if isinstance(logger, TensorBoardLogger)][0]
-        else:
-            raise ValueError("TensorBoardLogger not found in the trainer logger collection.")
-
-        writer = tensorboard_logger.experiment
+        # This used to raise for any non-TensorBoard logger, which is why waking
+        # the callback up would have killed a W&B run at the first validation.
+        # The log_tensorboard_* helpers already guard on hasattr, so a W&B
+        # experiment object simply falls through them; the W&B audio is written
+        # separately in log_audio below.
+        writer = getattr(trainer.logger, "experiment", None)
 
         diffusion_model = pl_module.model
         if self.use_ema_model:
@@ -625,10 +632,26 @@ class SampleLogger(Callback):
         #noise = torch.load('/speech/dbwork/mul/spielwiese4/students/demancum/noise.pt') #TODO TOGLIERE
         #noise.to("cuda")
 
+        # Condition on the piano rolls of the clips already in this validation
+        # batch. Without this the generated audio ignores the notes completely,
+        # even for a model trained with conditioning -- so the samples could
+        # never show whether conditioning controls the output.
+        midi = None
+        if (
+            getattr(pl_module, "use_midi", False)
+            and len(batch) > 3
+            and batch[3] is not None
+        ):
+            midi = batch[3][: noise.shape[0]].float().to(noise.device)
+            if midi.shape[0] < noise.shape[0]:
+                # The last validation batch can be smaller than num_items.
+                noise = noise[: midi.shape[0]]
+
         for steps in self.sampling_steps:
             samples = diffusion_model.sample(
                 noise=noise,
                 embedding=embedding,
+                midi=midi,
                 sampler=self.diffusion_sampler,
                 sigma_schedule=self.diffusion_schedule,
                 num_steps=steps,
@@ -669,5 +692,32 @@ class SampleLogger(Callback):
                 sampling_rate=self.sampling_rate,
                 step=trainer.global_step
             )
+            self.log_audio_wandb(
+                trainer,
+                tag=f"samples/sampling_steps-{steps}",
+                samples=samples,
+                conditioned=midi is not None,
+            )
         if is_train:
             pl_module.train()
+
+    def log_audio_wandb(self, trainer, tag, samples, conditioned):
+        """Write generated clips to W&B.
+
+        The log_tensorboard_* helpers guard on hasattr(writer, "add_audio"), so
+        with a wandb experiment object they quietly do nothing -- which is why
+        this exists. The tag records whether the clips were conditioned, so a
+        run's audio is not ambiguous after the fact.
+        """
+        if not isinstance(trainer.logger, WandbLogger):
+            return
+
+        suffix = "cond" if conditioned else "uncond"
+        clips = []
+        for clip in samples.detach().cpu().float():
+            audio = torch.nan_to_num(clip.squeeze()).numpy()
+            clips.append(wandb.Audio(audio, sample_rate=self.sampling_rate))
+
+        trainer.logger.experiment.log(
+            {f"{tag}-{suffix}": clips, "trainer/global_step": trainer.global_step}
+        )

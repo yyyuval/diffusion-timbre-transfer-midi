@@ -47,6 +47,26 @@ OUTPUT_AUDIO_PATH  = WAV_DIR + "/generated_bassoon.wav"
 ADD_FIFTH          = False
 FIFTH_GAIN         = 0.8
 
+# ---- MIDI conditioning -----------------------------------------------------
+# These MUST match the checkpoints being loaded. The models are constructed from
+# this config and then loaded with strict=True, so a mismatch fails immediately
+# with missing/unexpected keys rather than silently running unconditioned.
+#
+#   USE_MIDI = False              -> mode A checkpoints (no MIDI params at all)
+#   USE_MIDI, MIDI_MODE="single"  -> mode B (original one-shot injection)
+#   USE_MIDI, MIDI_MODE="multiscale" -> mode C (injected at every resolution)
+#
+# Both halves of the bridge get the same roll, so the SOURCE and TARGET models
+# must have been trained with the same mode and the same MIDI_BINS.
+USE_MIDI           = False
+MIDI_MODE          = "multiscale"
+MIDI_BINS          = 128        # 128 * number of instruments the model saw
+MIDI_FPS           = 75         # must match the cache the models trained on
+
+# A cached .npy piano roll, or a .mid which is rendered here. Cropped from the
+# START, matching how the input audio is cropped below.
+MIDI_PATH          = ""
+
 # ---- Diffusion settings (normally leave as-is) -----------------------------
 SAMPLING_RATE      = 24000
 CLIP_LENGTH        = 409600     # 17 seconds @ 24kHz; model trained on this
@@ -74,6 +94,7 @@ warnings.filterwarnings("ignore")
 sys.path.append(REPO_PATH)
 os.chdir(REPO_PATH)   # so the relative checkpoint paths above resolve
 
+import numpy as np
 import torch
 import torchaudio
 import matplotlib
@@ -115,6 +136,46 @@ def save_spec(waveform_np, title):
     print(f"  saved spectrogram: {path}")
 
 
+def load_piano_roll(path, target_frames, midi_fps, midi_bins, device):
+    """Load a cached .npy roll, or render a .mid, cropped to the audio clip.
+
+    The input audio is cropped from the start of the file, so the roll is too --
+    they have to describe the same stretch of music or the conditioning is worse
+    than useless (that was Bug 10).
+    """
+    if path.lower().endswith(".npy"):
+        roll = np.load(path).astype(np.float32)
+    else:
+        import pretty_midi
+        pm = pretty_midi.PrettyMIDI(path)
+        # Same two lines the cache builders use. Threshold 0 keeps every
+        # sounding note: CocoChorales writes a flat velocity of 64, so a
+        # threshold of 40 filters nothing there but would silently drop quiet
+        # notes in a hand-made .mid.
+        roll = (pm.get_piano_roll(fs=midi_fps) > 0).astype(np.float32)
+
+    roll = roll[:, :target_frames]
+    if roll.shape[1] < target_frames:
+        roll = np.pad(
+            roll,
+            pad_width=((0, 0), (0, target_frames - roll.shape[1])),
+            mode="constant",
+            constant_values=0,
+        )
+
+    if roll.shape[0] != midi_bins:
+        raise ValueError(
+            "MIDI_PATH has %d pitch rows but MIDI_BINS is %d. For a mixture "
+            "model the roll must be the stacked [128*K, T] the dataset builds, "
+            "not a single instrument's roll." % (roll.shape[0], midi_bins)
+        )
+
+    print("  piano roll: %s  active frames: %d/%d"
+          % (roll.shape, int((roll.sum(axis=0) > 0).sum()), roll.shape[1]))
+
+    return torch.from_numpy(roll).unsqueeze(0).to(device)
+
+
 def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     banner(f"Device: {device}")
@@ -133,11 +194,15 @@ def main():
     banner(f"Loading SOURCE model: {SOURCE_NAME}")
     source_diffusion = AudioDiffusionModel(
         diffusion_sigma_distribution=diffusion_sigma_distribution,
+        use_midi=USE_MIDI,
+        midi_mode=MIDI_MODE,
+        midi_bins=MIDI_BINS,
     )
     pl_model_source = Model(
         model=source_diffusion,
         mean_path=SOURCE_MEAN_PATH,
         std_path=SOURCE_STD_PATH,
+        use_midi=USE_MIDI,
     )
     ckpt_source = torch.load(SOURCE_CKPT, map_location=device)
     pl_model_source.load_state_dict(ckpt_source["state_dict"], strict=True)
@@ -147,11 +212,15 @@ def main():
     banner(f"Loading TARGET model: {TARGET_NAME}")
     target_diffusion = AudioDiffusionModel(
         diffusion_sigma_distribution=diffusion_sigma_distribution,
+        use_midi=USE_MIDI,
+        midi_mode=MIDI_MODE,
+        midi_bins=MIDI_BINS,
     )
     pl_model_target = Model(
         model=target_diffusion,
         mean_path=TARGET_MEAN_PATH,
         std_path=TARGET_STD_PATH,
+        use_midi=USE_MIDI,
     )
     ckpt_target = torch.load(TARGET_CKPT, map_location=device)
     pl_model_target.load_state_dict(ckpt_target["state_dict"], strict=True)
@@ -196,10 +265,24 @@ def main():
     )
     print(f"  encodec embeddings shape: {embeddings_source.shape}")
 
+    # ---- MIDI conditioning -------------------------------------------------
+    midi = None
+    if USE_MIDI:
+        if not MIDI_PATH:
+            raise ValueError("USE_MIDI is True but MIDI_PATH is empty.")
+        banner(f"Loading MIDI: {MIDI_PATH}")
+        target_frames = int(round(CLIP_LENGTH / SAMPLING_RATE * MIDI_FPS))
+        midi = load_piano_roll(
+            MIDI_PATH, target_frames, MIDI_FPS, MIDI_BINS, device
+        )
+    else:
+        print("  MIDI conditioning OFF (USE_MIDI=False)")
+
     # ---- BRIDGE step 1: input -> noise (SOURCE model, reverse) -------------
     banner("Reverse diffusion: input -> noise")
     noisy_embeddings = pl_model_source.model.sample(
         noise=embeddings_source,
+        midi=midi,
         sampler=diffusion_sampler_reverse,
         sigma_schedule=diffusion_schedule,
         num_steps=NUM_STEPS,
@@ -216,6 +299,7 @@ def main():
     banner("Forward diffusion: noise -> target")
     generated_embeddings = pl_model_target.model.sample(
         noise=noisy_embeddings,
+        midi=midi,
         sampler=diffusion_sampler,
         sigma_schedule=diffusion_schedule,
         num_steps=NUM_STEPS,
