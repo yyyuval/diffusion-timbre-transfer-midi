@@ -1,0 +1,53 @@
+# @package _global_
+# Two-instrument training: one sample is a whole track with the flute and bassoon
+# stems SUMMED. See mix_instruments in exp/datamodule/base.yaml -- putting two
+# names in `instruments` does not do this, it yields separate samples of each.
+defaults:
+  - model: latent
+  - loggers: wandb
+  - callbacks: base
+  - trainer: full
+  - datamodule: base
+
+latent: True
+cond: False
+
+# Unused in mixture mode (mix_instruments drives discovery), kept so any
+# ${instruments} interpolation still resolves.
+instruments:
+  - flute
+mix_instruments:
+  - flute
+  - bassoon
+
+# Two stacked rolls of 128 pitches each. Must equal 128 * len(mix_instruments).
+midi_bins: 256
+
+exp_name: 'flute_bassoon'
+sign: None
+
+sampling_rate: 24000
+length: 409600
+latent_lenght: 1280
+channels: 1
+log_every_n_steps: 1000
+
+# Computed with scripts/compute_latent_stats.py on the MIXTURE. The shipped
+# single-instrument tensors are wrong here: a sum of two instruments has a
+# different latent distribution, which would leave diffusion_sigma_data: 1
+# miscalibrated.
+mean_path: '/home/shared_workspace/diffusion-timbre-transfer/checkpoints/flute_bassoon_mean.pt'
+std_path: '/home/shared_workspace/diffusion-timbre-transfer/checkpoints/flute_bassoon_std.pt'
+
+diffusion_sigma_data: 1
+sigma_min: 0.001
+# Must match cello/bassoon. The stale flute yaml uses 100; a model trained at a
+# different sigma_max cannot bridge to one trained at 5.
+sigma_max: 5
+rho: 9.0
+
+dataset_path: '/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset'
+exp_tag: 'flute_bassoon_v1'
+logs_dir: '/home/shared_workspace/diffusion-timbre-transfer/our_checkpoints'
+trainer:
+  devices: 1

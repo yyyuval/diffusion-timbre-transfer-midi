@@ -40,6 +40,9 @@ model:
   use_midi: ${oc.select:use_midi,false}
   midi_mode: ${oc.select:midi_mode,multiscale}
   midi_gate_init: ${oc.select:midi_gate_init,0.0}
+  # Pitch rows the roll carries: 128 for one instrument, 128*K for a mixture.
+  # Must match mix_instruments in the datamodule or the first conv shape-errors.
+  midi_bins: ${oc.select:midi_bins,128}
   diffusion_type: k
   diffusion_latent: ${latent}
   diffusion_sigma_distribution:

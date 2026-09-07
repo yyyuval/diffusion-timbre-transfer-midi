@@ -23,6 +23,71 @@ def get_all_wav_filenames(paths: Sequence[str], recursive: bool, instruments: st
     print(f"==================== Found {len(filenames)} {instruments} tracks ====================")
     return filenames
 
+
+def get_paired_stem_filenames(
+    paths: Sequence[str], instruments: Sequence[str]
+) -> List[List[str]]:
+    """Tracks that contain a stem for EVERY named instrument, one group per track.
+
+    This is NOT what passing several names to `instruments` does. fast_scandir
+    matches any file whose name contains any listed instrument, so that yields
+    individual stems of each instrument as separate samples -- never mixed.
+    Here a sample is a whole track, and the stems get summed in load_mixture.
+
+    Stems are returned in the order the instruments were requested, which is the
+    order the piano rolls are stacked in, so it has to stay stable.
+    """
+    extensions = (".wav", ".flac")
+    groups: List[List[str]] = []
+    incomplete = 0
+
+    for root in paths:
+        if not os.path.isdir(root):
+            continue
+        for track_name in sorted(os.listdir(root)):
+            stems_dir = os.path.join(root, track_name, "stems_audio")
+            if not os.path.isdir(stems_dir):
+                continue
+
+            names = sorted(os.listdir(stems_dir))
+            picked: List[str] = []
+            taken = set()
+
+            for inst in instruments:
+                hit = next(
+                    (
+                        n
+                        for n in names
+                        if n not in taken
+                        and n.lower().endswith(extensions)
+                        and inst.lower() in n.lower()
+                    ),
+                    None,
+                )
+                if hit is None:
+                    break
+                taken.add(hit)
+                picked.append(os.path.join(stems_dir, hit))
+
+            if len(picked) == len(instruments):
+                groups.append(picked)
+            else:
+                incomplete += 1
+
+    print(
+        "==================== Found %d tracks with all of %s ===================="
+        % (len(groups), list(instruments))
+    )
+    if incomplete:
+        # A quiet shortfall here is the same class of problem as Bug 10: nothing
+        # fails, the dataset is just smaller than intended and nobody notices.
+        print(
+            "                     (%d tracks skipped -- missing at least one stem)"
+            % incomplete
+        )
+    return groups
+
+
 class WAVDataset(Dataset):
     def __init__(
         self,
@@ -37,9 +102,25 @@ class WAVDataset(Dataset):
         midi_fps: int = 75,
         midi_cache_root: Optional[str] = None,
         midi_shuffle: bool = False,
+        mix_instruments: Optional[Sequence[str]] = None,
     ):
         self.paths = path if isinstance(path, (list, tuple)) else [path]
-        self.wavs = get_all_wav_filenames(self.paths, recursive=recursive, instruments=instruments)
+
+        # Two-instrument (or K-instrument) mode: one sample is a whole track,
+        # with the named stems summed. When None everything below behaves
+        # exactly as it did for single-instrument training.
+        self.mix_instruments = list(mix_instruments) if mix_instruments else None
+
+        if self.mix_instruments:
+            self.groups = get_paired_stem_filenames(self.paths, self.mix_instruments)
+            # Kept so code paths that only need "some wav for this sample" (the
+            # instrument label, the returned path) still work.
+            self.wavs = [g[0] for g in self.groups]
+        else:
+            self.groups = None
+            self.wavs = get_all_wav_filenames(
+                self.paths, recursive=recursive, instruments=instruments
+            )
         self.transforms = transforms
         self.sample_rate = sample_rate
         self.check_silence = check_silence
@@ -107,7 +188,56 @@ class WAVDataset(Dataset):
             )
 
         return waveform, sample_rate, crop_start_sec
-    
+
+    def load_mixture(self, group: Sequence[str]) -> Tuple[Tensor, int, float]:
+        """Read the SAME window from every stem of one track and sum them.
+
+        The offset is chosen once and reused for all stems. Stems within a
+        CocoChorales track are the same performance and the same length, so a
+        shared offset is what makes the mixture musically coherent -- and it is
+        what lets the piano rolls line up too (see Bug 10).
+        """
+        info = torchaudio.info(group[0])
+        length = info.num_frames
+        sample_rate = info.sample_rate
+
+        ratio = 1 if (self.sample_rate is None) else sample_rate / self.sample_rate
+        crop_size = (
+            length
+            if (self.random_crop_size is None)
+            else math.ceil(self.random_crop_size * ratio)
+        )
+        frame_offset = random.randint(0, max(length - crop_size, 0))
+        crop_start_sec = frame_offset / info.sample_rate
+
+        mixture = None
+        for stem_path in group:
+            waveform, _ = torchaudio.load(
+                stem_path, frame_offset=frame_offset, num_frames=crop_size
+            )
+
+            if waveform.shape[0] == 2:
+                waveform = waveform.mean(dim=0, keepdim=True)
+
+            if waveform.shape[-1] < crop_size:
+                waveform = torch.nn.functional.pad(
+                    waveform,
+                    pad=(0, crop_size - waveform.shape[-1]),
+                    mode="constant",
+                    value=0,
+                )
+
+            mixture = waveform if mixture is None else mixture + waveform
+
+        # Only rescale when the sum would actually clip. Normalising every clip
+        # unconditionally would flatten the loudness distribution, which the
+        # single-instrument path does not do.
+        peak = mixture.abs().max()
+        if peak > 0.95:
+            mixture = 0.95 * mixture / peak
+
+        return mixture, sample_rate, crop_start_sec
+
     #yuval add func
     def get_midi_cache_path(self, wav_path: str) -> str:
         if self.midi_cache_root is None:
@@ -153,9 +283,13 @@ class WAVDataset(Dataset):
                     tag = TinyTag.get(self.wavs[idx])
 
                 # Read with optimized crop if needed
-                if hasattr(self, "random_crop_size"):
+                if self.mix_instruments:
+                    waveform, sample_rate, crop_start_sec = self.load_mixture(
+                        self.groups[int(idx)]
+                    )
+                elif hasattr(self, "random_crop_size"):
                     waveform, sample_rate, crop_start_sec = self.optimized_random_crop(int(idx))
-                    
+
                 else:
                     waveform, sample_rate = torchaudio.load(self.wavs[idx])
                     crop_start_sec = 0.0
@@ -202,18 +336,26 @@ class WAVDataset(Dataset):
 
             #yuval add
             midi_idx = idx
-            if self.midi_shuffle and len(self.wavs) > 1:
-                midi_idx = random.randrange(len(self.wavs))
+            if self.midi_shuffle and len(self) > 1:
+                midi_idx = random.randrange(len(self))
                 while midi_idx == idx:
-                    midi_idx = random.randrange(len(self.wavs))
+                    midi_idx = random.randrange(len(self))
 
-            midi_path = self.get_midi_cache_path(self.wavs[midi_idx])
-            
-
-            if os.path.exists(midi_path):
-                piano_roll = np.load(midi_path).astype(np.float32)
+            # One roll per stem. In mixture mode these are stacked along the
+            # pitch axis below, so the model sees which instrument plays what
+            # rather than a merged "something is sounding" roll.
+            if self.mix_instruments:
+                midi_sources = self.groups[midi_idx]
             else:
-                piano_roll = np.zeros((128, 1), dtype=np.float32)
+                midi_sources = [self.wavs[midi_idx]]
+
+            piano_rolls = []
+            for src in midi_sources:
+                midi_path = self.get_midi_cache_path(src)
+                if os.path.exists(midi_path):
+                    piano_rolls.append(np.load(midi_path).astype(np.float32))
+                else:
+                    piano_rolls.append(np.zeros((128, 1), dtype=np.float32))
 
             # Yuval add: crop MIDI to match the audio crop -- the same WINDOW of
             # the track, not merely the same duration. optimized_random_crop
@@ -233,28 +375,38 @@ class WAVDataset(Dataset):
                 # notes, rather than at this clip's offset -- a short track
                 # sliced at a large offset would come back mostly zeros, which
                 # is the no-MIDI condition, not the wrong-MIDI one.
-                midi_start = random.randint(
-                    0, max(piano_roll.shape[1] - target_midi_frames, 0)
-                )
+                shortest = min(r.shape[1] for r in piano_rolls)
+                midi_start = random.randint(0, max(shortest - target_midi_frames, 0))
             else:
                 midi_start = int(round(crop_start_sec * self.midi_fps))
 
-            piano_roll = piano_roll[:, midi_start : midi_start + target_midi_frames]
+            # Every stem is cropped at the SAME offset, so the stacked rolls stay
+            # aligned with each other and with the audio.
+            for i, roll in enumerate(piano_rolls):
+                roll = roll[:, midi_start : midi_start + target_midi_frames]
 
-            # If MIDI is shorter than needed, pad with zeros
-            if piano_roll.shape[1] < target_midi_frames:
-                pad_width = target_midi_frames - piano_roll.shape[1]
-                piano_roll = np.pad(
-                    piano_roll,
-                    pad_width=((0, 0), (0, pad_width)),
-                    mode="constant",
-                    constant_values=0,
-                )
+                # If MIDI is shorter than needed, pad with zeros
+                if roll.shape[1] < target_midi_frames:
+                    pad_width = target_midi_frames - roll.shape[1]
+                    roll = np.pad(
+                        roll,
+                        pad_width=((0, 0), (0, pad_width)),
+                        mode="constant",
+                        constant_values=0,
+                    )
+                piano_rolls[i] = roll
 
+            # [128, T] for one instrument, [128*K, T] for a mixture -- stacked in
+            # mix_instruments order, so midi_bins must be 128*K in the model.
+            piano_roll = (
+                piano_rolls[0]
+                if len(piano_rolls) == 1
+                else np.concatenate(piano_rolls, axis=0)
+            )
             piano_roll = torch.from_numpy(piano_roll)
 
             #yuval add self.wavs[idx],piano_roll for midi
             return waveform, instrument_name[2:], self.wavs[idx], piano_roll
 
     def __len__(self) -> int:
-        return len(self.wavs)
+        return len(self.groups) if self.mix_instruments else len(self.wavs)

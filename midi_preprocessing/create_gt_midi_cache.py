@@ -42,7 +42,11 @@ def render(midi_path: Path, out_path: Path, fps: int, velocity_threshold: float)
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset_root", required=True)
-    p.add_argument("--instrument", required=True)
+    p.add_argument("--instrument", required=True, nargs="+",
+                   help="one or more, e.g. --instrument violin cello. Several "
+                        "names build one cache covering the whole ensemble, "
+                        "which is what mixture training needs: the dataset looks "
+                        "every stem up by filename under a single cache root.")
     p.add_argument("--cache_root", required=True)
     p.add_argument("--fps", type=int, default=75,
                    help="must match midi_fps in exp/datamodule/base.yaml")
@@ -55,17 +59,22 @@ def main():
 
     dataset_root = Path(args.dataset_root)
     cache_root = Path(args.cache_root)
-    inst = args.instrument
+    instruments = args.instrument
 
     # Drive off the AUDIO stems, not the MIDI ones. Training asks for a roll per
     # wav, so enumerating wavs is the only way to guarantee the cache covers
     # exactly what will be requested -- and to notice when one is missing.
-    wav_files = sorted(dataset_root.glob(f"*/stems_audio/*{inst}*.wav"))
+    wav_files = []
+    for inst in instruments:
+        hits = sorted(dataset_root.glob(f"*/stems_audio/*{inst}*.wav"))
+        print(f"  {inst}: {len(hits)} wav files")
+        wav_files.extend(hits)
+    wav_files = sorted(set(wav_files))
 
     if args.limit is not None:
         wav_files = wav_files[: args.limit]
 
-    print(f"Found {len(wav_files)} {inst} wav files")
+    print(f"Found {len(wav_files)} wav files for {instruments}")
     print(f"fps={args.fps}  velocity_threshold={args.velocity_threshold}")
     print(f"cache_root={cache_root}")
     print()

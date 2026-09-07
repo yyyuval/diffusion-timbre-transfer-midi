@@ -452,6 +452,42 @@ So: the model reads the notes, and gains nothing measurable from them. Two expla
 
 ---
 
+## 🎻🎻 Two-instrument training
+
+One sample is a whole track with two stems **summed** — real polyphony, instead of the synthetic copy `AddFifth` produced.
+
+```bash
+mix_instruments=[violin,cello]      # or set it in the exp yaml
+midi_bins=256                       # 128 * number of instruments
+```
+
+⚠️ **Putting two names in `instruments` does NOT do this.** `fast_scandir` matches on filename, so `instruments: [violin, cello]` yields individual violin files *and* individual cello files as separate samples, never mixed. `mix_instruments` is a different code path: it finds tracks containing *all* the named stems and sums them.
+
+- Both stems are read at the **same crop offset**, which is what keeps the mixture musically coherent and the rolls aligned.
+- Tracks missing any stem are skipped and **reported at startup** — check that count.
+- The summed audio is rescaled only if it would clip, so the loudness distribution stays close to single-instrument training.
+- Piano rolls are **stacked**, not merged: `[128*K, T]`, instrument order = `mix_instruments` order. The model therefore knows *which* instrument plays each note. `midi_bins` must equal `128*K` or the trunk's first conv shape-errors (loudly — good).
+
+> Separate gates per instrument were considered and rejected: the trunk's first `Conv1d` is a full linear map over input channels, so with the instruments stacked as separate channels it can already weight them independently. Per-instrument scalars would add parameters without adding expressiveness.
+
+### Latent stats are NOT reusable
+
+`encode_latent` z-normalises with per-channel stats, and `diffusion_sigma_data: 1` assumes the result has unit variance. A two-instrument mixture has a different latent distribution, so `mean_cello.pt` is wrong for a violin+cello model. Build new ones first:
+
+```bash
+python scripts/compute_latent_stats.py   --dataset_root $D --mix_instruments violin cello   --out_prefix /home/shared_workspace/diffusion-timbre-transfer/checkpoints/violin_cello
+```
+
+The repo shipped no such script (the existing tensors came from Zenodo); this one reuses `WAVDataset`, so it measures exactly the audio training will see.
+
+### One cache per ensemble
+
+`create_gt_midi_cache.py --instrument` now takes several names, so one invocation covers a whole ensemble. The dataset looks each stem up by filename under a single `midi_cache_root`, which is what mixture mode needs.
+
+Configs: `exp/violin_cello_latent.yaml`, `exp/flute_bassoon_latent.yaml`.
+
+---
+
 ## 🚀 Training
 
 ### Step 1 — activate env
