@@ -2,9 +2,13 @@
 
 This file gives Claude (or any new assistant / teammate) the full context needed to work inside this repository and dataset environment. It is intentionally detailed so that a fresh conversation can pick up exactly where the last one left off, with no loss of context.
 
-> **Status (2026-09-06):**
-> - **Phase 1 — AddFifth polyphony augmentation: DONE.** Cello and bassoon each trained 100 epochs with the fifth added. `Run_timbre_transfer.py` runs the full cello→bassoon bridge end to end.
-> - **Phase 2 — MIDI piano-roll conditioning: IN PROGRESS.** The pipeline is wired end to end (cache builders → dataset → gated UNet conditioning → W&B logging), but **no full MIDI-conditioned model has been trained yet** — only a 1-epoch smoke test. A crop-alignment bug that would have silently defeated the conditioning was found and fixed on 2026-09-06 (see **Bug 10**); any MIDI run started before that date is invalid.
+> **Status (2026-09-07):**
+> - **Phase 1 — AddFifth polyphony augmentation: DONE.** Cello and bassoon each trained 100 epochs with the fifth added.
+> - **Phase 2 — MIDI conditioning: measured, and the first answer is negative.** With the original single-injection architecture the model demonstrably *reads* the notes (the scrambled-MIDI control leaves the gate at zero while real MIDI moves it to ±0.26) but gains **no measurable loss benefit** — four conditions, 20,000 steps, `valid_loss` spread 0.05%. Two explanations remain live: the Encodec latent already encodes pitch, or the conditioning was too weak to exploit. `midi_mode=multiscale` was built to separate them.
+> - **Phase 3 — two-instrument training: implemented, running.** One sample is a whole track with two stems summed, with their piano rolls stacked to `[256, T]`.
+> - **Six 85-epoch runs launched 2026-09-07** — see *Runs in flight* below.
+
+> ⚠️ Any MIDI-conditioned checkpoint from before **2026-09-06** trained on misaligned conditioning (Bug 10) and should be discarded.
 
 ---
 
@@ -569,8 +573,23 @@ BASSOON (target):
 ```
 These are what `Run_timbre_transfer.py` points at today.
 
-### Phase 2 — MIDI conditioned
-**None yet.** Only the 1-epoch smoke test (`bassoon_midi_addfifth_wandb_test_yuval`). The first real run is still to be launched, and must be launched **after** the Bug 10 fix.
+### Phase 2 — MIDI conditioned, single-injection (`midi_mode=single`)
+Four bassoon runs at 40 epochs, 2026-09-06: `bassoon_{gt,bp,scrambled,nomidi}_40ep`. `valid_loss` at step 19999 — bp **0.57531**, gt **0.57534**, nomidi **0.57557**, scrambled **0.57561**. Use **0.57557** as the unconditioned baseline for anything bassoon-shaped.
+
+### Runs in flight (launched 2026-09-07, 85 epochs each)
+
+| GPU | exp_tag | data | MIDI |
+|---|---|---|---|
+| 4 | `cello_gt_ms_85ep` | cello | multiscale |
+| 6 | `bassoon_gt_ms_85ep` | bassoon | multiscale |
+| 1 | `violin_cello_nomidi_85ep` | violin+cello | none |
+| 3 | `flute_bassoon_nomidi_85ep` | flute+bassoon | none |
+| 5 | `violin_cello_gt_ms_85ep` | violin+cello | multiscale |
+| 7 | `flute_bassoon_gt_ms_85ep` | flute+bassoon | multiscale |
+
+Two complete bridges (`cello→bassoon` and `(violin+cello)→(flute+bassoon)`), plus a MIDI on/off comparison for the pair case with everything else held constant.
+
+**The open question:** do the deep gates move? At step ~1500, `L0` was at −0.082 while `L2`–`L5` sat at ~0.001. The measured gradient at `L0` is roughly 200× that at the deeper levels, so they escape zero far more slowly — if they never do, multiscale has collapsed back to a single injection and bought nothing. If `L2`–`L5` are still ~0.001 at step 10,000 while `L0` passes 0.2, rerun with **`midi_gate_init=0.1`** so every level gets gradient from step 0.
 
 > **On loss values:** the paper reports no training-loss baseline (it uses FAD + DPD), and we train on a modified distribution, so our loss is not comparable to it. Rough feel for this setup: >1.0 barely learning; 0.6–0.8 decent; 0.3–0.5 good; <0.3 very good. The real test is listening plus DPD/JD.
 
@@ -694,11 +713,16 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 8. ~~Build MIDI piano-roll caches (cello + bassoon, fps75, +fifth)~~ ✅
 9. ~~Wire MIDI conditioning into dataset + UNet~~ ✅
 10. ~~Fix MIDI/audio crop misalignment~~ ✅ (Bug 10, 2026-09-06)
-11. **Run a short MIDI training sanity run** — a few thousand steps, watch `train/midi_gate` move off zero. This is the go/no-go for the whole feature.
-12. **Train cello + bassoon with MIDI conditioning** (100 epochs each) once 11 looks right.
-13. **Add MIDI support to `Run_timbre_transfer.py`** — otherwise the conditioned models run unconditioned at inference.
-14. **Evaluate**: DPD / JD against the Phase-1 AddFifth-only baseline, plus listening.
-15. Housekeeping: add `pretty_midi` + `basic-pitch` to `requirements.txt`; name the remaining cache dirs in `.gitignore`; delete the old `midi_outputs/cache_temp_midis*` trees (see below — the scripts no longer create them).
+11. ~~Short MIDI sanity run — does the gate move?~~ ✅ It does, and the scrambled control proves it is the notes, not spare parameters.
+12. ~~Train with MIDI conditioning and a proper baseline~~ ✅ 40-epoch runs, four conditions. No loss benefit.
+13. ~~Multi-scale conditioning architecture~~ ✅ (`midi_mode=multiscale`)
+14. ~~Two-instrument training~~ ✅ (`mix_instruments`, stacked `[256, T]` rolls, mixture latent stats)
+15. ~~MIDI at inference and in the sample logger~~ ✅ (Bug 12, and the inference section above)
+16. **Watch the deep gates** on the six runs in flight. If `L2`–`L5` stay at ~0 while `L0` climbs, rerun with `midi_gate_init=0.1`.
+17. **Compare `valid_loss`, pair-with-MIDI vs pair-without** (GPU 5 vs 1, GPU 7 vs 3). Same data, same architecture, one variable — the cleanest test of whether conditioning helps.
+18. **Run the bridges and measure DPD / JD**, with `USE_MIDI=True` and `False` on the same checkpoints. Loss is not the project's metric; this is.
+19. **Listen** to `samples/` in W&B — the first generated audio the project has produced (Bug 12 kept the logger inert until 2026-09-07).
+20. Housekeeping: add `pretty_midi` + `basic-pitch` to `requirements.txt`; refresh the stale `hydra-core==1.2.0` pin; name the remaining cache dirs in `.gitignore`; delete the old `midi_outputs/cache_temp_midis*` trees.
 
 ---
 
@@ -707,14 +731,41 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 The container holds a lot more than the repo. What is actually there, and what it is for:
 
 ### Piano-roll caches — the `.npy` files training reads
-| Directory | Status |
-|---|---|
-| `midi_cache_cello_fps75_addfifth/` | ✅ **live** — `get_midi_cache_path()` reads this |
-| `midi_cache_bassoon_fps75_addfifth/` | ✅ **live** — same |
-| `midi_cache_cello_fps75/` | keep — the source `create_addfifth_pianoroll_cache.py` reads |
-| `midi_cache_bassoon_fps75/` | keep — same |
-| `midi_cache_cello/` | ⚠️ **stale, 50 fps** — first run before the fps was raised. Nothing reads it; delete it so nobody points at it by mistake |
-| `midi_cache_test/` | scratch from a `--limit` run |
+
+Nothing is hardcoded any more: a run reads whichever cache `midi_cache_root=` points at.
+
+| Directory | Rolls | Source | Used by |
+|---|---|---|---|
+| `midi_cache_cello_fps75_gt/` | 11,395 | dataset `stems_midi/` | `cello_gt_ms_85ep` |
+| `midi_cache_bassoon_fps75_gt/` | 9,982 | dataset `stems_midi/` | `bassoon_gt_ms_85ep` |
+| `midi_cache_string_fps75_gt/` | 30,053 | dataset, violin + cello | `violin_cello_gt_ms_85ep` |
+| `midi_cache_wood_fps75_gt/` | 20,523 | dataset, flute + bassoon | `flute_bassoon_gt_ms_85ep` |
+| `midi_cache_cello_fps75/` | 11,395 | **basic-pitch** | the 40-epoch `bp` comparison |
+| `midi_cache_bassoon_fps75/` | 9,982 | **basic-pitch** | same |
+| `midi_cache_*_fps75_addfifth/` | — | +7 semitones added to the above | AddFifth-era runs only |
+| `midi_cache_cello/` | — | ⚠️ **stale, 50 fps** — nothing reads it, delete so nobody points at it | — |
+| `midi_cache_test/` | — | scratch from a `--limit` run | — |
+
+A mixture cache holds every stem of the ensemble under one root, because `get_midi_cache_path` keys on the stem filename (`4_cello_pianoroll.npy`). Build one per ensemble, not per instrument:
+
+```bash
+python midi_preprocessing/create_gt_midi_cache.py   --dataset_root $D --instrument violin cello   --cache_root $R/midi_cache_string_fps75_gt
+```
+
+Both mixture caches came back at **100% coverage, 0 missing**. Always read that line — a missing roll is not an error, it is a silent all-zero roll.
+
+### Mixture latent stats (in `checkpoints/`)
+
+`violin_cello_{mean,std}.pt` and `flute_bassoon_{mean,std}.pt`, from `scripts/compute_latent_stats.py` over 1000 clips each. They validate against the shipped Zenodo tensors and differ in the predicted direction — summing two instruments raises latent variance:
+
+| | std min | std max |
+|---|---|---|
+| `std_cello` (Zenodo) | 0.424 | 1.892 |
+| `violin_cello_std` | **0.595** | **2.175** |
+| `std_tensor_enc_bassoon` (Zenodo) | 0.500 | 1.968 |
+| `flute_bassoon_std` | **0.638** | **2.376** |
+
+Reusing `std_cello` for a violin+cello model would have left the normalised latent at ~1.4 std instead of 1.0, miscalibrating `diffusion_sigma_data: 1` by about 40%.
 
 ### `midi_outputs/` — intermediate `.mid`, safe to delete
 These are left over from runs made **before** the cache scripts learned to clean up after themselves. `create_*_midi_cache.py` used to run `basic-pitch` into `<temp_midi_root>/<track_name>/` and never delete it — one directory per track, kept forever:
