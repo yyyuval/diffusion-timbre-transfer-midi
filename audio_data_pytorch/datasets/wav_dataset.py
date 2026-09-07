@@ -53,6 +53,13 @@ class WAVDataset(Dataset):
         # run can be pointed at a different source (ground truth vs basic-pitch,
         # with or without the added fifth) without editing code.
         self.midi_cache_root = midi_cache_root
+        # A wrong path here does not fail -- every lookup misses and the dataset
+        # quietly serves all-zero rolls, which looks exactly like "MIDI does not
+        # help". Fail at construction instead. None means MIDI is switched off.
+        if midi_cache_root is not None and not os.path.isdir(midi_cache_root):
+            raise FileNotFoundError(
+                "midi_cache_root does not exist: %s" % (midi_cache_root,)
+            )
         # Control condition: pair each clip with a roll from a DIFFERENT track.
         # Same format, same density, wrong notes. If the gate still climbs under
         # this, gate movement is not evidence the model reads the notes.
@@ -182,6 +189,16 @@ class WAVDataset(Dataset):
                 return waveform, tag
 
             instrument_name = os.path.splitext(os.path.basename(self.wavs[idx]))[0]
+
+            # MIDI switched off: skip the load entirely. A stub keeps the tuple
+            # length constant so collate and `len(batch) > 3` still behave.
+            if self.midi_cache_root is None:
+                return (
+                    waveform,
+                    instrument_name[2:],
+                    self.wavs[idx],
+                    torch.zeros(128, 1),
+                )
 
             #yuval add
             midi_idx = idx

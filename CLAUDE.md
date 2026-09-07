@@ -404,9 +404,24 @@ Three switches exist to answer this. All default to the normal path, so ordinary
 
 | Override | Effect |
 |---|---|
-| `midi_cache_root=<path>` | which roll cache to read — ground truth, basic-pitch, with or without the fifth |
+| `use_midi=true` | **the master switch.** Off by default. When off, no MIDI parameters are built, nothing is loaded, nothing is passed — the model is byte-for-byte the upstream architecture |
+| `midi_cache_root=<path>` | which roll cache to read. Required when `use_midi=true`; a path that does not exist now raises at startup instead of silently serving zero rolls |
+| `midi_mode=multiscale\|single` | conditioning architecture. `multiscale` (default) injects at every resolution; `single` is the original one-shot injection, kept for comparison |
+| `midi_gate_init=<float>` | starting value for the gates. `0.0` (default) means the model begins identical to the unconditioned one |
 | `datamodule.dataset.midi_shuffle=true` | **control**: pair each clip with a roll from a *different* track. Same format, same density, wrong notes. The window is drawn from within that track's own length, so a short track does not come back mostly zeros — that would be the no-MIDI condition, not the wrong-MIDI one |
-| `model.use_midi=false` | **baseline**: `midi` is never passed, so the gated block is skipped entirely rather than fed zeros (see Bug 11) |
+
+### The architecture, and why it was changed
+
+The original scheme injected MIDI **once**, right after `to_in` at length 1280, through a single scalar gate. From there the signal had to survive five downsampling stages to the bottleneck at length 5 — a **256× compression** — with nothing re-introducing it. That is close to the weakest conditioning mechanism available, and a negative result from it says nothing about MIDI conditioning in general.
+
+`midi_mode=multiscale` injects at **every** resolution:
+
+```
+shared trunk (Conv-SiLU-Conv, 128 pitches -> 128ch) runs once at full length
+  then per level i:  x_i = x_i + gate_i * proj_i(pool(trunk_out, len(x_i)))
+```
+
+Six injection points, channel widths `[128, 256, 512, 1024, 1024, 1024]`, one gate each. Downsampling uses average pooling, not nearest — with rolls this dense, nearest-neighbour would discard most of the signal, while averaging preserves "how much of this window is sounding". `train/midi_gate_L0..L5` shows which scales the model actually finds notes useful at.
 
 ### The two metrics
 
@@ -423,7 +438,17 @@ Cello and bassoon, ground truth vs basic-pitch, no fifth, ~2,500 steps each:
 - **The envelope hypothesis is ruled out.** Ground truth sits at 0.99 notes/frame (strictly monophonic, essentially always sounding); basic-pitch at 1.17–1.44, stacking its hallucinated octaves into the *same* time columns (frame counts differ by only 2–5%). Both mark ~95–99% of frames active, so "is a note sounding" carries almost no information — there is nothing there for the model to learn from.
 - **Leading hypothesis: the Encodec latent already encodes pitch**, so the conditioning is largely redundant. The model turns the gate up because it is not harmful, but cannot reduce the loss with information it already had.
 
-The 40-epoch runs (`bassoon_{gt,bp,scrambled,nomidi}_40ep`) test this: if the scrambled gate climbs like the real one, gate movement is not evidence the model reads notes; if `gt` beats `nomidi` on `valid_loss`, conditioning helps at all.
+### Findings — 40-epoch runs, single-injection architecture (2026-09-07)
+
+Four bassoon runs, 20,000 steps each: `gt`, `bp`, `scrambled`, `nomidi`.
+
+- **The model genuinely reads the notes.** Real MIDI drove the gate to **+0.20** (basic-pitch) and **−0.26** (ground truth). **Scrambled MIDI left it at 0.** Same architecture, same audio, same note density — the only difference was whether the notes matched the audio. That rules out the model simply exploiting spare parameters.
+- **Ground truth beat basic-pitch**, |0.26| vs |0.20|, and was still growing while `bp` had plateaued.
+- **No loss benefit whatsoever.** `valid_loss` at step 19999: bp 0.57531, gt 0.57534, nomidi 0.57557, scrambled 0.57561 — a spread of 0.05%, well inside run-to-run noise.
+
+So: the model reads the notes, and gains nothing measurable from them. Two explanations remain open — the Encodec latent already encodes pitch (making the conditioning redundant), or the single-injection architecture was too weak to exploit it. `midi_mode=multiscale` exists to separate those.
+
+**Note:** loss was never the right metric here — the paper evaluates on FAD and pitch distance. `SampleLogger.sample()` and `Run_timbre_transfer.py` both omit `midi=`, so every sample generated so far has been unconditioned, even by the conditioned models. The plumbing works (`DiffusionSampler.forward` merges kwargs into the denoise call); it has simply never been used.
 
 ---
 

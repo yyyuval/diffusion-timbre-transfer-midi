@@ -11,7 +11,7 @@ dataset:
   # still zero-pads tracks shorter than ${length}.
   random_crop_size: ${length}
   midi_fps: 75
-  midi_cache_root: ${midi_cache_root}
+  midi_cache_root: ${oc.select:midi_cache_root,null}
   # true pairs each clip with another track's roll (the control condition)
   midi_shuffle: false
   transforms:

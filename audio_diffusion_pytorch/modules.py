@@ -941,6 +941,10 @@ class UNet1d(nn.Module):
         use_skip_scale: bool = True,
         use_stft: bool = False,
         use_stft_context: bool = False,
+        use_midi: bool = False,
+        midi_mode: str = "multiscale",
+        midi_bins: int = 128,
+        midi_gate_init: float = 0.0,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
         context_features_multiplier: int = 4, 
@@ -1037,23 +1041,53 @@ class UNet1d(nn.Module):
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
         )
-        # Yuval add: MIDI gated conditioning
-        midi_hidden_channels = channels * multipliers[0]
-
-        self.midi_encoder = nn.Sequential(
-            nn.Conv1d(128, midi_hidden_channels, kernel_size=3, padding=1),
-            nn.SiLU(),
-            nn.Conv1d(midi_hidden_channels, midi_hidden_channels, kernel_size=3, padding=1),
-        )
-
-        # Starts at zero, so the model initially behaves exactly like the original model
-        self.midi_gate = nn.Parameter(torch.zeros(1))
-
-        # Last measured size of the MIDI contribution relative to x. The gate
-        # value alone says nothing, because the scale of midi_encoder's output
-        # is unknown -- a gate of 0.2 on a tiny feature is still no conditioning.
-        # Detached, read by Model.training_step for logging only.
+        # ---- MIDI conditioning -------------------------------------------
+        # Nothing is built when use_midi is False, so the state_dict is exactly
+        # the original architecture. That keeps pre-MIDI checkpoints loadable
+        # with strict=True, and stops DDP complaining about unused parameters
+        # (Bug 11).
+        self.use_midi = use_midi
+        self.midi_mode = midi_mode
         self._midi_rel = None
+        self._midi_rel_per_level = []
+
+        if use_midi:
+            midi_channels = [channels * m for m in multipliers]
+            c0 = midi_channels[0]
+
+            trunk = nn.Sequential(
+                nn.Conv1d(midi_bins, c0, kernel_size=3, padding=1),
+                nn.SiLU(),
+                nn.Conv1d(c0, c0, kernel_size=3, padding=1),
+            )
+
+            if midi_mode == "multiscale":
+                # Injected at EVERY resolution. The original scheme injected once
+                # after to_in at length 1280, and the signal then had to survive
+                # five downsampling stages to length 5 -- a 256x compression with
+                # nothing re-introducing it. Here a shared trunk runs once at full
+                # resolution, a 1x1 projection maps it to each level's width, and
+                # every level owns a gate, so the model decides for itself at
+                # which scales the notes are worth using.
+                self.midi_stem = trunk
+                self.midi_projs = nn.ModuleList(
+                    [nn.Conv1d(c0, c, kernel_size=1) for c in midi_channels]
+                )
+                self.midi_gates = nn.ParameterList(
+                    [
+                        nn.Parameter(torch.full((1,), float(midi_gate_init)))
+                        for _ in midi_channels
+                    ]
+                )
+            elif midi_mode == "single":
+                # The original single-injection scheme, kept so the two can be
+                # compared directly rather than argued about.
+                self.midi_encoder = trunk
+                self.midi_gate = nn.Parameter(torch.full((1,), float(midi_gate_init)))
+            else:
+                raise ValueError(
+                    "midi_mode must be 'multiscale' or 'single', got %r" % (midi_mode,)
+                )
         
 
         self.downsamples = nn.ModuleList(
@@ -1116,6 +1150,41 @@ class UNet1d(nn.Module):
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
         )
+
+    def encode_midi(self, midi, ref):
+        """Run the shared MIDI trunk once, at full resolution."""
+        if midi is None or not self.use_midi:
+            return None
+        midi = midi.to(device=ref.device, dtype=ref.dtype)
+        trunk = self.midi_stem if self.midi_mode == "multiscale" else self.midi_encoder
+        return trunk(midi)
+
+    def inject_midi(self, x, midi_h, level):
+        """Add the MIDI features into x at one resolution level."""
+        if midi_h is None:
+            return x
+        if self.midi_mode == "single" and level != 0:
+            return x
+
+        h = midi_h
+        if h.shape[-1] != x.shape[-1]:
+            if h.shape[-1] > x.shape[-1]:
+                # Average-pool going down. Nearest-neighbour would drop whole
+                # frames, and with rolls this dense that throws most of the
+                # signal away; averaging keeps "how much of this window sounds".
+                h = torch.nn.functional.adaptive_avg_pool1d(h, x.shape[-1])
+            else:
+                h = torch.nn.functional.interpolate(h, size=x.shape[-1], mode="nearest")
+
+        if self.midi_mode == "multiscale":
+            contrib = self.midi_gates[level] * self.midi_projs[level](h)
+        else:
+            contrib = self.midi_gate * h
+
+        self._midi_rel_per_level.append(
+            contrib.detach().norm() / (x.detach().norm() + 1e-8)
+        )
+        return x + contrib
 
     def get_channels(
         self, channels_list: Optional[Sequence[Tensor]] = None, layer: int = 0
@@ -1181,25 +1250,10 @@ class UNet1d(nn.Module):
         mapping = self.get_mapping(time, features)
         
         x = self.to_in(x, mapping) 
-       
-        # Yuval add: apply MIDI gated conditioning after input projection
-        if midi is not None:
-            midi = midi.to(device=x.device, dtype=x.dtype)
-            
-            midi_features = self.midi_encoder(midi)
 
-            if midi_features.shape[-1] != x.shape[-1]:
-                midi_features = torch.nn.functional.interpolate(
-                    midi_features,
-                    size=x.shape[-1],
-                    mode="nearest",
-                )
-
-            midi_contrib = self.midi_gate * midi_features
-            self._midi_rel = (
-                midi_contrib.detach().norm() / (x.detach().norm() + 1e-8)
-            )
-            x = x + midi_contrib
+        midi_h = self.encode_midi(midi, x)
+        self._midi_rel_per_level = []
+        x = self.inject_midi(x, midi_h, 0)
 
         skips_list = [x]
 
@@ -1208,7 +1262,14 @@ class UNet1d(nn.Module):
             x, skips = downsample(
                 x, mapping=mapping, channels=channels, embedding=embedding
             )
+            x = self.inject_midi(x, midi_h, i + 1)
             skips_list += [skips]
+
+        self._midi_rel = (
+            torch.stack(self._midi_rel_per_level).mean()
+            if self._midi_rel_per_level
+            else None
+        )
 
         x = self.bottleneck(x, mapping=mapping, embedding=embedding)
 

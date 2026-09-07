@@ -12,8 +12,9 @@ latent: ${latent}
 cond: ${cond}
 mean_path: ${mean_path}
 std_path: ${std_path}
-# false = unconditioned baseline; midi is never passed to the UNet
-use_midi: true
+# The single switch for the whole feature. false = the original architecture:
+# no MIDI parameters are created at all, nothing is passed, nothing is logged.
+use_midi: ${oc.select:use_midi,false}
 
 model:
   _target_: audio_diffusion_pytorch.AudioDiffusionModel #AudioDiffusionConditional for conditional models, #AudioDiffusionModel for non conditional models
@@ -33,6 +34,12 @@ model:
   use_skip_scale: True
   latent: ${latent}
   cond: ${cond}
+  # MIDI conditioning inside the UNet.
+  #   multiscale = inject at every resolution (default)
+  #   single     = the original one-shot injection, kept for comparison
+  use_midi: ${oc.select:use_midi,false}
+  midi_mode: ${oc.select:midi_mode,multiscale}
+  midi_gate_init: ${oc.select:midi_gate_init,0.0}
   diffusion_type: k
   diffusion_latent: ${latent}
   diffusion_sigma_distribution:

@@ -257,23 +257,39 @@ class Model(pl.LightningModule):
             midi=midi_resized,
             pl_self = self
             )
-        # Yuval add: log MIDI gate value
-        if hasattr(self.model.unet, "midi_gate"):
+        # Yuval add: log the MIDI gates. multiscale mode has one per resolution,
+        # so log each -- which levels move tells you at what scale the notes are
+        # actually useful, which a single scalar could never show.
+        unet = self.model.unet
+        gates = getattr(unet, "midi_gates", None)
+
+        if gates is not None:
+            for gi, g in enumerate(gates):
+                self.log(
+                    "train/midi_gate_L%d" % gi,
+                    g.detach(),
+                    prog_bar=(gi == 0),
+                    on_step=True,
+                    on_epoch=False,
+                )
+            if self.global_step % 500 == 0:
+                print("midi_gates:", [round(float(g), 4) for g in gates])
+
+        elif hasattr(unet, "midi_gate"):
             self.log(
                 "train/midi_gate",
-                self.model.unet.midi_gate.detach(),
+                unet.midi_gate.detach(),
                 prog_bar=True,
                 on_step=True,
                 on_epoch=False,
             )
-
             if self.global_step % 500 == 0:
-                print("midi_gate:", self.model.unet.midi_gate.item())
+                print("midi_gate:", unet.midi_gate.item())
 
         # How large the MIDI term actually is next to x. This is the number that
         # says whether conditioning is doing anything -- the gate alone does not,
         # because the scale of midi_encoder's output is unknown.
-        midi_rel = getattr(self.model.unet, "_midi_rel", None)
+        midi_rel = getattr(unet, "_midi_rel", None)
         if midi_rel is not None:
             self.log(
                 "train/midi_rel_magnitude",
