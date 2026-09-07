@@ -493,6 +493,15 @@ Two separate faults in the callback that is supposed to write audio samples to t
 
 Fixed: an `on_validation_epoch_start` arms it, the logger check no longer raises (the `log_tensorboard_*` helpers already no-op on a non-TensorBoard writer, and a new `log_audio_wandb` writes `wandb.Audio` instead), the samples are conditioned on `batch[3]` when `use_midi` is on, and the whole call is wrapped in try/except — a logging callback must never take an 85-epoch run down with it.
 
+**Bug 13 — `use_midi=true` rejected with "Could not override".**
+The MIDI flags are read through `${oc.select:...}`, which looks them up at the **root** of the config, but they were only ever defined inside `exp/model/latent.yaml`. Hydra runs in struct mode, so a plain `key=value` override can only touch a key that already exists — every one of `use_midi=`, `midi_mode=`, `midi_cache_root=` failed at startup.
+
+Fixed by declaring them in `config.yaml`. Because `config.yaml` lists `_self_` first in its `defaults`, `exp` still composes on top, so the pair configs' `midi_bins: 256` and `mix_instruments` continue to win.
+
+> The lesson for testing: resolving the YAML with `OmegaConf.merge` proves the *interpolations* work but never exercises the *override* machinery. Compose through `hydra.compose(config_name="config", overrides=[...])` with the exact command-line strings instead.
+
+> Aside: `requirements.txt` pins `hydra-core==1.2.0`, which cannot import on Python 3.11+ (mutable dataclass default). The venv is Python 3.12, so it must actually have something newer installed — the pin is stale.
+
 ---
 
 ## 🚀 Training

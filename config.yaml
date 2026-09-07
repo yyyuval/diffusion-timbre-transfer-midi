@@ -12,6 +12,22 @@ print_config: False # Prints tree with all configurations
 work_dir: ${hydra:runtime.cwd}  # This is the root of the project
 logs_dir: ${work_dir}${oc.env:DIR_LOGS}  # This is the root for all logs
 data_dir: ${work_dir}${oc.env:DIR_DATA} # This is the root for all data
+# ---- MIDI conditioning -----------------------------------------------------
+# These live at the root so that plain `use_midi=true` works on the command
+# line. Hydra runs in struct mode: an override without a `+` can only touch a
+# key that already exists, and the sub-configs reference these through
+# ${oc.select:...}, which reads from the root. Without them here, every one of
+# these flags fails with "Could not override ... No match in the defaults list".
+#
+# config.yaml lists _self_ first, so `exp` composes on top of these -- the pair
+# configs' midi_bins: 256 and mix_instruments still win.
+use_midi: false             # false = original architecture, no MIDI params
+midi_mode: multiscale       # multiscale | single
+midi_gate_init: 0.0
+midi_bins: 128              # 128 * number of instruments
+midi_cache_root: null       # null = MIDI off, nothing loaded
+mix_instruments: null       # e.g. [violin, cello] for two-instrument training
+
 exp_tag: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 output_dir: ${logs_dir}/${exp_tag}
 ckpt_dir: ${output_dir}/ckpts
