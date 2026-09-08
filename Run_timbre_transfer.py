@@ -35,7 +35,13 @@ TARGET_STD_PATH    = "checkpoints/std_tensor_enc_bassoon.pt"
 TARGET_CKPT        = "our_checkpoints/bassoon_add_fifth_100_bs16_V1/ckpts/epoch=99-valid_loss=0.627.ckpt"
 
 # ---- INPUT audio -----------------------------------------------------------
-INPUT_AUDIO_PATH   = "/home/shared_workspace/diffusion-timbre-transfer/real_cello.wav"
+# One wav, or SEVERAL stems of the SAME track in a list -- those are summed, the
+# way the mixture models saw them during training. The order must match the
+# model's mix_instruments, since that is the order their piano rolls stack in.
+#
+#   solo:    ".../string_track005158/stems_audio/4_cello.wav"
+#   mixture: [".../stems_audio/1_violin.wav", ".../stems_audio/4_cello.wav"]
+INPUT_AUDIO_PATH   = "/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset/string_track005158/stems_audio/4_cello.wav"
 
 # ---- OUTPUT audio (where to save the generated result) ---------------------
 WAV_DIR            = "/home/shared_workspace/diffusion-timbre-transfer/Outputs/WAV_files"
@@ -63,8 +69,14 @@ MIDI_MODE          = "multiscale"
 MIDI_BINS          = 128        # 128 * number of instruments the model saw
 MIDI_FPS           = 75         # must match the cache the models trained on
 
-# A cached .npy piano roll, or a .mid which is rendered here. Cropped from the
-# START, matching how the input audio is cropped below.
+# Leave EMPTY to take the notes straight from the dataset: every CocoChorales
+# track ships stems_midi/<stem>.mid beside stems_audio/<stem>.wav, so the roll is
+# DERIVED from INPUT_AUDIO_PATH rather than chosen. That is the point -- pairing
+# audio with another track's notes is worse than no conditioning at all, and it
+# cannot happen if nobody picks the file.
+#
+# Set it only to override: a cached .npy roll, a .mid, or a list of either (one
+# per stem, in INPUT_AUDIO_PATH order).
 MIDI_PATH          = ""
 
 # ---- Diffusion settings (normally leave as-is) -----------------------------
@@ -136,43 +148,83 @@ def save_spec(waveform_np, title):
     print(f"  saved spectrogram: {path}")
 
 
-def load_piano_roll(path, target_frames, midi_fps, midi_bins, device):
-    """Load a cached .npy roll, or render a .mid, cropped to the audio clip.
+def as_list(value):
+    """One path or several -- the rest of the script only handles lists."""
+    return list(value) if isinstance(value, (list, tuple)) else [value]
 
-    The input audio is cropped from the start of the file, so the roll is too --
+
+def derive_midi_paths(audio_paths):
+    """stems_audio/4_cello.wav  ->  stems_midi/4_cello.mid, for each stem.
+
+    CocoChorales ships ground-truth MIDI beside every stem, so the notes that
+    belong to this exact audio are one substitution away. Deriving them removes
+    the only way the pair can go wrong.
+    """
+    midi_paths = []
+    for audio_path in audio_paths:
+        stems_dir, wav_name = os.path.split(audio_path)
+        track_dir, audio_folder = os.path.split(stems_dir)
+        if audio_folder != "stems_audio":
+            raise ValueError(
+                "cannot derive MIDI: %s is not inside a stems_audio/ folder. "
+                "Point INPUT_AUDIO_PATH at a CocoChorales stem, or set "
+                "MIDI_PATH yourself." % (audio_path,)
+            )
+        midi_path = os.path.join(
+            track_dir, "stems_midi", os.path.splitext(wav_name)[0] + ".mid"
+        )
+        if not os.path.exists(midi_path):
+            raise FileNotFoundError("no ground-truth MIDI at %s" % (midi_path,))
+        midi_paths.append(midi_path)
+    return midi_paths
+
+
+def load_piano_roll(paths, target_frames, midi_fps, midi_bins, device):
+    """Build the [128*K, T] roll from one .npy/.mid per stem, stacked.
+
+    The input audio is cropped from the start of the file, so each roll is too --
     they have to describe the same stretch of music or the conditioning is worse
     than useless (that was Bug 10).
     """
-    if path.lower().endswith(".npy"):
-        roll = np.load(path).astype(np.float32)
-    else:
-        import pretty_midi
-        pm = pretty_midi.PrettyMIDI(path)
-        # Same two lines the cache builders use. Threshold 0 keeps every
-        # sounding note: CocoChorales writes a flat velocity of 64, so a
-        # threshold of 40 filters nothing there but would silently drop quiet
-        # notes in a hand-made .mid.
-        roll = (pm.get_piano_roll(fs=midi_fps) > 0).astype(np.float32)
+    rolls = []
+    for path in as_list(paths):
+        if path.lower().endswith(".npy"):
+            roll = np.load(path).astype(np.float32)
+        else:
+            import pretty_midi
+            pm = pretty_midi.PrettyMIDI(path)
+            # Same two lines the cache builders use. Threshold 0 keeps every
+            # sounding note: CocoChorales writes a flat velocity of 64, so a
+            # threshold of 40 filters nothing there but would silently drop
+            # quiet notes in a hand-made .mid.
+            roll = (pm.get_piano_roll(fs=midi_fps) > 0).astype(np.float32)
 
-    roll = roll[:, :target_frames]
-    if roll.shape[1] < target_frames:
-        roll = np.pad(
-            roll,
-            pad_width=((0, 0), (0, target_frames - roll.shape[1])),
-            mode="constant",
-            constant_values=0,
-        )
+        roll = roll[:, :target_frames]
+        if roll.shape[1] < target_frames:
+            roll = np.pad(
+                roll,
+                pad_width=((0, 0), (0, target_frames - roll.shape[1])),
+                mode="constant",
+                constant_values=0,
+            )
+        print("    %-40s %s  active %d/%d"
+              % (os.path.basename(path), roll.shape,
+                 int((roll.sum(axis=0) > 0).sum()), roll.shape[1]))
+        rolls.append(roll)
+
+    # Stacked, not merged: rows 0-127 are the first stem, 128-255 the second.
+    # Merging would throw away which instrument plays which note.
+    roll = np.concatenate(rolls, axis=0) if len(rolls) > 1 else rolls[0]
 
     if roll.shape[0] != midi_bins:
         raise ValueError(
-            "MIDI_PATH has %d pitch rows but MIDI_BINS is %d. For a mixture "
-            "model the roll must be the stacked [128*K, T] the dataset builds, "
-            "not a single instrument's roll." % (roll.shape[0], midi_bins)
+            "the roll has %d pitch rows but MIDI_BINS is %d. A mixture model "
+            "needs one stem per 128 rows -- check that INPUT_AUDIO_PATH lists "
+            "as many stems as the model was trained on."
+            % (roll.shape[0], midi_bins)
         )
 
-    print("  piano roll: %s  active frames: %d/%d"
-          % (roll.shape, int((roll.sum(axis=0) > 0).sum()), roll.shape[1]))
-
+    print("  piano roll: %s" % (roll.shape,))
     return torch.from_numpy(roll).unsqueeze(0).to(device)
 
 
@@ -227,10 +279,27 @@ def main():
     pl_model_target.to(device)
 
     # ---- load + prepare INPUT audio ----------------------------------------
-    banner(f"Loading input audio: {INPUT_AUDIO_PATH}")
-    waveform_raw, orig_sr = torchaudio.load(INPUT_AUDIO_PATH)
-    resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=SAMPLING_RATE)
-    waveform_raw = resampler(waveform_raw)
+    audio_paths = as_list(INPUT_AUDIO_PATH)
+    banner("Loading input audio: %d stem(s)" % len(audio_paths))
+
+    waveform_raw = None
+    for audio_path in audio_paths:
+        print("  " + audio_path)
+        stem, orig_sr = torchaudio.load(audio_path)
+        if orig_sr != SAMPLING_RATE:
+            stem = torchaudio.transforms.Resample(
+                orig_freq=orig_sr, new_freq=SAMPLING_RATE
+            )(stem)
+        waveform_raw = stem if waveform_raw is None else waveform_raw + stem
+
+    # Same headroom rule as the training dataset's mixture path. A solo stem is
+    # fed exactly as recorded, so only rescale when there was something to sum.
+    if len(audio_paths) > 1:
+        peak = waveform_raw.abs().max()
+        print("  summed %d stems, peak %.3f" % (len(audio_paths), float(peak)))
+        if peak > 0.95:
+            waveform_raw = 0.95 * waveform_raw / peak
+            print("  rescaled to 0.95")
 
     if ADD_FIFTH:
         print("  applying AddFifth (polyphony) to match training distribution")
@@ -268,12 +337,15 @@ def main():
     # ---- MIDI conditioning -------------------------------------------------
     midi = None
     if USE_MIDI:
-        if not MIDI_PATH:
-            raise ValueError("USE_MIDI is True but MIDI_PATH is empty.")
-        banner(f"Loading MIDI: {MIDI_PATH}")
+        if MIDI_PATH:
+            midi_paths = as_list(MIDI_PATH)
+            banner("Loading MIDI (from MIDI_PATH)")
+        else:
+            midi_paths = derive_midi_paths(audio_paths)
+            banner("Loading MIDI (ground truth, derived from the input stems)")
         target_frames = int(round(CLIP_LENGTH / SAMPLING_RATE * MIDI_FPS))
         midi = load_piano_roll(
-            MIDI_PATH, target_frames, MIDI_FPS, MIDI_BINS, device
+            midi_paths, target_frames, MIDI_FPS, MIDI_BINS, device
         )
     else:
         print("  MIDI conditioning OFF (USE_MIDI=False)")
