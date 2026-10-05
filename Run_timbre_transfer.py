@@ -1,3 +1,4 @@
+import os
 """
 =============================================================================
   TIMBRE TRANSFER — single-file inference script
@@ -22,17 +23,28 @@ REPO_PATH = "/home/shared_workspace/diffusion-timbre-transfer"
 
 # ---- SOURCE model (the instrument your INPUT audio is) ---------------------
 # This model maps the input audio -> noise.
-SOURCE_NAME        = "cello"     # label, used only for printouts / titles
-SOURCE_MEAN_PATH   = "checkpoints/mean_cello.pt"
-SOURCE_STD_PATH    = "checkpoints/std_cello.pt"
-SOURCE_CKPT        = "our_checkpoints/cello_add_fifth_2_bs16_V4/ckpts/epoch=94-valid_loss=0.653.ckpt"
+SOURCE_NAME        = "flute_bassoon"
+SOURCE_MEAN_PATH   = "checkpoints/flute_bassoon_mean.pt"
+SOURCE_STD_PATH    = "checkpoints/flute_bassoon_std.pt"
+EXPERIMENT_NAME = os.environ.get("EXPERIMENT_NAME", "no_midi")
+
+if EXPERIMENT_NAME == "no_midi":
+    SOURCE_CKPT        = "our_checkpoints/flute_bassoon_nomidi_85ep/ckpts/epoch=83-valid_loss=0.592.ckpt"
+    TARGET_CKPT        = "our_checkpoints/violin_cello_nomidi_85ep/ckpts/epoch=80-valid_loss=0.637.ckpt"
+    USE_MIDI           = False
+elif EXPERIMENT_NAME == "original_midi":
+    SOURCE_CKPT        = "our_checkpoints/flute_bassoon_gt_ms_85ep/ckpts/epoch=83-valid_loss=0.586.ckpt"
+    TARGET_CKPT        = "our_checkpoints/violin_cello_gt_ms_85ep/ckpts/epoch=80-valid_loss=0.632.ckpt"
+    USE_MIDI           = True
+else:
+    raise ValueError(f"Unknown EXPERIMENT_NAME={EXPERIMENT_NAME}. Use no_midi or original_midi.")
+
 
 # ---- TARGET model (the instrument you want the OUTPUT to sound like) --------
 # This model reconstructs target audio from the noise.
-TARGET_NAME        = "bassoon"
-TARGET_MEAN_PATH   = "checkpoints/mean_tensor_enc_bassoon.pt"
-TARGET_STD_PATH    = "checkpoints/std_tensor_enc_bassoon.pt"
-TARGET_CKPT        = "our_checkpoints/bassoon_add_fifth_100_bs16_V1/ckpts/epoch=99-valid_loss=0.627.ckpt"
+TARGET_NAME        = "violin_cello"
+TARGET_MEAN_PATH   = "checkpoints/violin_cello_mean.pt"
+TARGET_STD_PATH    = "checkpoints/violin_cello_std.pt"
 
 # ---- INPUT audio -----------------------------------------------------------
 # One wav, or SEVERAL stems of the SAME track in a list -- those are summed, the
@@ -41,11 +53,18 @@ TARGET_CKPT        = "our_checkpoints/bassoon_add_fifth_100_bs16_V1/ckpts/epoch=
 #
 #   solo:    ".../string_track005158/stems_audio/4_cello.wav"
 #   mixture: [".../stems_audio/1_violin.wav", ".../stems_audio/4_cello.wav"]
-INPUT_AUDIO_PATH   = "/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset/string_track005158/stems_audio/4_cello.wav"
+DATASET_ROOT = "/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset"
+TRACK_NAME = os.environ.get("TRACK_NAME", "woodwind_track096001")
+SAMPLE_ID = TRACK_NAME
+
+INPUT_AUDIO_PATH = [
+    os.path.join(DATASET_ROOT, TRACK_NAME, "stems_audio", "1_flute.wav"),
+    os.path.join(DATASET_ROOT, TRACK_NAME, "stems_audio", "4_bassoon.wav"),
+]
 
 # ---- OUTPUT audio (where to save the generated result) ---------------------
 WAV_DIR            = "/home/shared_workspace/diffusion-timbre-transfer/Outputs/WAV_files"
-OUTPUT_AUDIO_PATH  = WAV_DIR + "/generated_bassoon.wav"
+OUTPUT_AUDIO_PATH  = WAV_DIR + "/generated_violin_cello_from_flute_bassoon.wav"
 
 # ---- AddFifth (polyphony) --------------------------------------------------
 # Set ADD_FIFTH = True to match the models trained WITH the fifth added.
@@ -64,9 +83,9 @@ FIFTH_GAIN         = 0.8
 #
 # Both halves of the bridge get the same roll, so the SOURCE and TARGET models
 # must have been trained with the same mode and the same MIDI_BINS.
-USE_MIDI           = False
+# USE_MIDI is set automatically from EXPERIMENT_NAME above
 MIDI_MODE          = "multiscale"
-MIDI_BINS          = 128        # 128 * number of instruments the model saw
+MIDI_BINS          = 256
 MIDI_FPS           = 75         # must match the cache the models trained on
 
 # Leave EMPTY to take the notes straight from the dataset: every CocoChorales
@@ -98,7 +117,7 @@ PLOT_DIR           = "/home/shared_workspace/diffusion-timbre-transfer/Outputs/W
 # ============================================================================
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # disabled: choose GPU from shell
 import sys
 import warnings
 warnings.filterwarnings("ignore")
@@ -109,6 +128,10 @@ os.chdir(REPO_PATH)   # so the relative checkpoint paths above resolve
 import numpy as np
 import torch
 import torchaudio
+import csv
+import os
+from pathlib import Path
+from datetime import datetime
 import matplotlib
 if not SHOW_PLOTS:
     matplotlib.use("Agg")   # headless backend, just saves files
@@ -256,7 +279,7 @@ def main():
         std_path=SOURCE_STD_PATH,
         use_midi=USE_MIDI,
     )
-    ckpt_source = torch.load(SOURCE_CKPT, map_location=device)
+    ckpt_source = torch.load(SOURCE_CKPT, map_location="cpu")
     pl_model_source.load_state_dict(ckpt_source["state_dict"], strict=True)
     pl_model_source.to(device)
 
@@ -274,7 +297,7 @@ def main():
         std_path=TARGET_STD_PATH,
         use_midi=USE_MIDI,
     )
-    ckpt_target = torch.load(TARGET_CKPT, map_location=device)
+    ckpt_target = torch.load(TARGET_CKPT, map_location="cpu")
     pl_model_target.load_state_dict(ckpt_target["state_dict"], strict=True)
     pl_model_target.to(device)
 
@@ -391,6 +414,29 @@ def main():
     )
     print(f"  done -> {OUTPUT_AUDIO_PATH}")
 
+    # ---- archive generated audio by experiment name -------------------------
+    experiment_name = os.environ.get("EXPERIMENT_NAME", "manual_run")
+    safe_experiment_name = "".join(
+        c if c.isalnum() or c in ("-", "_") else "_"
+        for c in experiment_name
+    )
+
+    audio_archive_dir = Path("Outputs/WAV_files/metrics/audio")
+    audio_archive_dir.mkdir(parents=True, exist_ok=True)
+
+    archived_output_audio_path = (
+        audio_archive_dir
+        / f"{safe_experiment_name}_{SAMPLE_ID}_{Path(str(OUTPUT_AUDIO_PATH)).name}"
+    )
+
+    torchaudio.save(
+        str(archived_output_audio_path),
+        torch.tensor(target_waveform_np).cpu(),
+        SAMPLING_RATE,
+    )
+
+    print(f"  archived audio -> {archived_output_audio_path}")
+
     # ---- pitch metrics (DPD / JD) ------------------------------------------
     banner("Pitch metrics")
     pitch_tracker = PitchTracker()
@@ -404,6 +450,37 @@ def main():
     dtw, jaccard = tracking_output[0][0]
     print(f"  DPD (pitch distance, lower = better melody preservation): {round(dtw, 2)}")
     print(f"  JD  (Jaccard distance):                                   {round(jaccard, 2)}")
+
+    # ---- save pitch metrics to CSV -----------------------------------------
+    metrics_path = Path("Outputs/WAV_files/metrics/inference_metrics.csv")
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+
+    experiment_name = os.environ.get("EXPERIMENT_NAME", "manual_run")
+    sample_id = SAMPLE_ID
+
+    row = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "experiment": experiment_name,
+        "sample_id": sample_id,
+        "source": SOURCE_NAME,
+        "target": TARGET_NAME,
+        "output_audio": str(archived_output_audio_path),
+        "DPD": float(dtw),
+        "JD": float(jaccard),
+        "num_steps": NUM_STEPS,
+    }
+
+    write_header = not metrics_path.exists()
+
+    with open(metrics_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+
+        if write_header:
+            writer.writeheader()
+
+        writer.writerow(row)
+
+    print(f"  metrics saved -> {metrics_path}")
 
     banner("All done")
 
