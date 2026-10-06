@@ -2,11 +2,12 @@
 
 This file gives Claude (or any new assistant / teammate) the full context needed to work inside this repository and dataset environment. It is intentionally detailed so that a fresh conversation can pick up exactly where the last one left off, with no loss of context.
 
-> **Status (2026-09-07):**
+> **Status (2026-10-06):**
 > - **Phase 1 — AddFifth polyphony augmentation: DONE.** Cello and bassoon each trained 100 epochs with the fifth added.
-> - **Phase 2 — MIDI conditioning: measured, and the first answer is negative.** With the original single-injection architecture the model demonstrably *reads* the notes (the scrambled-MIDI control leaves the gate at zero while real MIDI moves it to ±0.26) but gains **no measurable loss benefit** — four conditions, 20,000 steps, `valid_loss` spread 0.05%. Two explanations remain live: the Encodec latent already encodes pitch, or the conditioning was too weak to exploit. `midi_mode=multiscale` was built to separate them.
-> - **Phase 3 — two-instrument training: implemented, running.** One sample is a whole track with two stems summed, with their piano rolls stacked to `[256, T]`.
-> - **Six 85-epoch runs launched 2026-09-07** — see *Runs in flight* below.
+> - **Phase 2 — MIDI conditioning: the answer flipped at high noise.** At `sigma_max=5` conditioning buys ~1%, inside measurement noise. At `sigma_max=100` it buys **~12%**, far outside it. See *sigma_max and MIDI* below — this is the project's main result so far.
+> - **Phase 3 — two-instrument training: DONE.** Eight pair models, four per sigma.
+> - **Phase 4 — evaluation: Yuval owns it.** Brief at [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). The pipeline lives in `evaluation/` and `evaluation_mono/`.
+> - **Four single-instrument no-MIDI runs launched 2026-10-06** — the last gap in the matrix.
 
 > ⚠️ Any MIDI-conditioned checkpoint from before **2026-09-06** trained on misaligned conditioning (Bug 10) and should be discarded.
 
@@ -576,22 +577,47 @@ These are what `Run_timbre_transfer.py` points at today.
 ### Phase 2 — MIDI conditioned, single-injection (`midi_mode=single`)
 Four bassoon runs at 40 epochs, 2026-09-06: `bassoon_{gt,bp,scrambled,nomidi}_40ep`. `valid_loss` at step 19999 — bp **0.57531**, gt **0.57534**, nomidi **0.57557**, scrambled **0.57561**. Use **0.57557** as the unconditioned baseline for anything bassoon-shaped.
 
-### Runs in flight (launched 2026-09-07, 85 epochs each)
+### The 85-epoch matrix
 
-| GPU | exp_tag | data | MIDI |
+Every run below: 85 epochs, batch 16, `midi_mode=multiscale`, ground-truth MIDI. `valid_loss` of the best checkpoint.
+
+| | sigma=5 MIDI | sigma=5 none | sigma=100 MIDI | sigma=100 none |
+|---|---|---|---|---|
+| flute+bassoon | 0.586 | 0.592 | 0.593 | 0.667 |
+| violin+cello | 0.632 | 0.637 | 0.612 | 0.699 |
+| cello | 0.588 | *running* | 0.599 | *running* |
+| bassoon | 0.531 | *running* | 0.546 | *running* |
+
+Directory names follow `<data>_{gt_ms,nomidi}_85ep[_sigma100]`.
+
+### sigma_max and MIDI — the main result
+
+The paper trains at both 5 and 100 and shows 100 gives much better timbre at the cost of melody. We had only ever trained at 5. The six `_sigma100` runs (2026-10-06) tested the hypothesis that **MIDI conditioning would pay for the melody loss**, because MIDI enters at full strength regardless of noise level while the audio is progressively erased.
+
+| pair | no MIDI | MIDI | gain |
 |---|---|---|---|
-| 4 | `cello_gt_ms_85ep` | cello | multiscale |
-| 6 | `bassoon_gt_ms_85ep` | bassoon | multiscale |
-| 1 | `violin_cello_nomidi_85ep` | violin+cello | none |
-| 3 | `flute_bassoon_nomidi_85ep` | flute+bassoon | none |
-| 5 | `violin_cello_gt_ms_85ep` | violin+cello | multiscale |
-| 7 | `flute_bassoon_gt_ms_85ep` | flute+bassoon | multiscale |
+| **sigma=5** | | | |
+| violin+cello | 0.637 | 0.632 | 0.8% |
+| flute+bassoon | 0.592 | 0.586 | 1.0% |
+| **sigma=100** | | | |
+| violin+cello | 0.699 | **0.612** | **12.4%** |
+| flute+bassoon | 0.667 | **0.593** | **11.1%** |
 
-Two complete bridges (`cello→bassoon` and `(violin+cello)→(flute+bassoon)`), plus a MIDI on/off comparison for the pair case with everything else held constant.
+**Twelve times larger.** The mechanism is the intended one: at sigma=5 the latent still carries ~3.8% of its variance as signal, enough for the model to read the melody from the audio, so the conditioning is redundant. At sigma=100 that drops to ~0.01% and MIDI becomes the only source of content.
 
-**The open question:** do the deep gates move? At step ~1500, `L0` was at −0.082 while `L2`–`L5` sat at ~0.001. The measured gradient at `L0` is roughly 200× that at the deeper levels, so they escape zero far more slowly — if they never do, multiscale has collapsed back to a single injection and bought nothing. If `L2`–`L5` are still ~0.001 at step 10,000 while `L0` passes 0.2, rerun with **`midi_gate_init=0.1`** so every level gets gradient from step 0.
+This also retires the standing worry about `midi_gate_init`. The gates did **not** grow at sigma=100 — cello went from `[-0.221, -0.373, -0.041, 0.006, -0.001, 0.000]` to `[-0.142, -0.174, -0.005, 0.030, 0.005, -0.003]`, and L3–L5 are still near zero — while the loss benefit grew 12×. **Gate magnitude is a bad proxy for usefulness**, exactly as the `train/midi_rel_magnitude` note below warns: the gate multiplies the encoder's output, so a larger encoder output and a smaller gate are the same function. Compare `train/midi_rel_magnitude`, not the gates.
 
-> **On loss values:** the paper reports no training-loss baseline (it uses FAD + DPD), and we train on a modified distribution, so our loss is not comparable to it. Rough feel for this setup: >1.0 barely learning; 0.6–0.8 decent; 0.3–0.5 good; <0.3 very good. The real test is listening plus DPD/JD.
+(The pair runs did move L1 to +0.235 and +0.290, well past L0 — consistent with 53 ms per step at that level being the scale at which note events live.)
+
+### ⚠️ Three things `valid_loss` cannot tell you
+
+**1. It is not comparable across sigma_max.** The loss is weighted by `(sigma^2 + sigma_data^2)/(sigma*sigma_data)^2` and drawn from a different sigma distribution — median sigma is ~0.19 at `sigma_max=5` and ~1.8 at 100. Reading 0.667 as "worse than 0.592" is meaningless; they are different exams. Only within-sigma comparisons are valid.
+
+**2. The train/val split differs between architectures.** `fractional_random_split` ([`audio_data_pytorch/utils.py:48`](audio_data_pytorch/utils.py#L48)) calls `torch.randperm` with no generator of its own, during `Datamodule.setup()` — which Lightning runs *after* `train.py` has constructed the model and consumed global RNG. A model with MIDI parameters draws a different number of values, so it gets a different permutation. Verified empirically: `nomidi` and `midi` produce disjoint first-eight indices. The MIDI-vs-no-MIDI runs therefore validate on **different subsets**. With ~1800 validation clips the sampling error on the mean is around 0.007 — the same order as the 0.005 gap at sigma=5, and far below the 0.087 gap at sigma=100.
+
+**3. Even within one run it is noisy.** Every validation pass re-crops a different random 17s window per track, redraws sigma per sample, and draws fresh noise. The validation set is a set of *tracks*, not of clips.
+
+Consequence: **differences under ~1-2% in `valid_loss` are not interpretable.** The sigma=100 result is 12%, comfortably clear of that. The sigma=5 result is not.
 
 ### Pre-existing repo checkpoints (in `checkpoints/`, NOT ours)
 `bassoon_sigmaMax_{5,100}.ckpt`, `cello_sigmaMax_5.ckpt(.1)`, `flute_sigmaMax_{5,100}.ckpt(.1)`, `violin_sigmaMax_{5,100}.ckpt`, `trumpet_sigmaMax_5.ckpt`, `pitch_flute_sigmaMax_5.ckpt`, plus the mean/std tensors below.
@@ -617,42 +643,57 @@ Precomputed dataset summaries in `checkpoints/` — nothing is trained in them.
 
 The whole `inference.ipynb` flow in one script, all config at the top: load source + target models, load input audio, (optionally) AddFifth, crop/pad to 17 s, encode, reverse-diffuse to noise (SOURCE), forward-diffuse to target (TARGET), decode, save WAV + spectrogram PNGs, print DPD/JD.
 
-### Current CONFIG defaults
+### It is driven by environment variables now
+
+The CONFIG block no longer needs editing for the common cases. Three env vars pick everything:
+
+```bash
+TRACK_NAME=woodwind_track096001 EXPERIMENT_NAME=original_midi_s100 SIGMA_HANDOFF=20 CUDA_VISIBLE_DEVICES=0 venv_yuval/bin/python Run_timbre_transfer.py
 ```
-SOURCE = cello   (mean_cello.pt / std_cello.pt / cello_add_fifth_2_bs16_V4 epoch=94)
-TARGET = bassoon (mean_tensor_enc_bassoon.pt / std_tensor_enc_bassoon.pt / bassoon_add_fifth_100_bs16_V1 epoch=99)
-INPUT_AUDIO_PATH = real_cello.wav
-ADD_FIFTH = False, FIFTH_GAIN = 0.8
-SAMPLING_RATE = 24000, CLIP_LENGTH = 409600 (17s), NUM_STEPS = 100
-SIGMA_MIN = 0.001, SIGMA_MAX = 5, RHO = 9.0   <- MATCH the training yaml exactly
-```
+
+| var | meaning |
+|---|---|
+| `TRACK_NAME` | CocoChorales track folder. The input stems are built from it, and it becomes `sample_id` in the metrics CSV |
+| `EXPERIMENT_NAME` | selects the checkpoint pair: `no_midi`, `original_midi`, `no_midi_s100`, `original_midi_s100` |
+| `SIGMA_HANDOFF` | optional, see below. Defaults to the trained sigma |
+
+### Two different sigmas, finally separated
+
+These used to share one name, which hid the paper's most useful inference knob.
+
+| | what it is |
+|---|---|
+| `TRAINED_SIGMA_MAX` | a property of the **weights** — the strongest noise the model ever learned to handle. Set per `EXPERIMENT_NAME`; cannot be chosen |
+| `SIGMA_HANDOFF` | where the two models **meet** during sampling (the paper's sigma_{N-1}). Free to choose, as long as it stays at or below the trained value |
+
+The Karras schedule now gets the handoff while the training distribution keeps the trained value, so a `sigma_max=100` model can be sampled at 50, 20 or 5 — the paper's Table III shows that dial moving FAD from 10.26 to 4.83 on flute to bassoon. A handoff above what the weights saw is **refused**, not silently extrapolated.
+
+Low handoff keeps the melody and barely moves the timbre; high does the opposite. A non-default value is appended to `EXPERIMENT_NAME` as `_h<value>` so a sweep does not overwrite its own outputs — note this means it is **not** a CSV column, and consumers must parse it out of the experiment string.
 
 ### MIDI at inference
 
-`Run_timbre_transfer.py` now conditions both halves of the bridge. In the CONFIG block:
+Both halves of the bridge are conditioned. `USE_MIDI` is set automatically from `EXPERIMENT_NAME`; `MIDI_MODE` and `MIDI_BINS` stay in the CONFIG block.
 
+⚠️ **These must match the checkpoints.** The models are built from this config and loaded with `strict=True`, so a mismatch fails immediately with missing/unexpected keys — the desired behaviour, not something to fix with `strict=False`. A no-MIDI checkpoint has no MIDI parameters at all and loads only with `USE_MIDI=False`. Both models in a bridge must share the same mode and `MIDI_BINS`.
+
+**Leave `MIDI_PATH` empty.** The roll is then **derived** from the input stems: `stems_audio/4_cello.wav` becomes `stems_midi/4_cello.mid`. Every CocoChorales track ships that MIDI, so the notes belonging to this exact audio are one substitution away. Deriving instead of choosing removes the only way the pair can be mismatched — which is worse than no conditioning at all (Bug 10). Set it only to override; several rolls stack to `[128*K, T]` in `INPUT_AUDIO_PATH` order.
+
+### Input: one stem or several
+
+`INPUT_AUDIO_PATH` accepts a list. Several stems of the same track are summed with the training dataset's headroom rule (rescale to 0.95 only if the sum would clip), so the mixture models can be driven without a separate preparation script.
+
+```python
+INPUT_AUDIO_PATH = [".../stems_audio/1_flute.wav", ".../stems_audio/4_bassoon.wav"]
 ```
-USE_MIDI  = True
-MIDI_MODE = "multiscale"   # or "single"
-MIDI_BINS = 128            # 128 * instruments the model was trained on
-MIDI_FPS  = 75
-MIDI_PATH = "...pianoroll.npy"   # a cached .npy, or a .mid rendered on the fly
-```
 
-⚠️ **These must match the checkpoints.** The models are built from this config and loaded with `strict=True`, so a mismatch fails immediately with missing/unexpected keys — which is the desired behaviour, not something to fix with `strict=False`. A mode-A checkpoint has no MIDI parameters at all and loads only with `USE_MIDI=False`. Both models in the bridge must share the same mode and `MIDI_BINS`.
-
-The roll is cropped from the **start**, matching how the input audio is cropped, and zero-padded if short. A roll whose row count disagrees with `MIDI_BINS` raises rather than being reshaped.
-
-To measure whether conditioning changes the audio: run the same checkpoints twice, `USE_MIDI=True` and `False`, and compare DPD/JD. That is the question the loss could not answer.
-
-> ⚠️ `ADD_FIFTH` currently defaults to **False** while the Phase-1 checkpoints were trained **with** the fifth. Set it to `True` to match those models.
+⚠️ **`ADD_FIFTH` belongs to the Phase-1 checkpoints only.** Those were trained with the synthetic fifth; every 85-epoch model was not. Set it `True` only for `cello_add_fifth_*` / `bassoon_add_fifth_*`.
 
 ### Things baked into the script
 - `CUDA_VISIBLE_DEVICES` set at the very top; code references `cuda:0` (Bug 8).
 - `os.chdir(REPO_PATH)` so relative checkpoint paths resolve.
 - Headless matplotlib (`Agg`) — saves PNGs instead of showing them. `SHOW_PLOTS=True` only in a notebook.
 - Crop-or-pad to exactly 409600 samples: input is often 32 s, and a naive `pad(0, 409600 - len)` would compute a negative pad.
-- Saves the cropped INPUT too, so you can hear what the model actually received.
+- Saves the cropped INPUT too — but to a **single fixed path with no `sample_id`**, which every run overwrites, and the metrics CSV has no column pointing at it. After a sweep only the last input survives. Any metric needing the paired input must re-derive it from `sample_id` and replicate the preprocessing exactly: resample each stem to 24 kHz, sum, rescale to 0.95 only if multi-stem and clipping, crop from sample 0.
 - Pitch metric called with `plot=True` (Bug 9).
 
 ### Run it
@@ -718,11 +759,64 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 13. ~~Multi-scale conditioning architecture~~ ✅ (`midi_mode=multiscale`)
 14. ~~Two-instrument training~~ ✅ (`mix_instruments`, stacked `[256, T]` rolls, mixture latent stats)
 15. ~~MIDI at inference and in the sample logger~~ ✅ (Bug 12, and the inference section above)
-16. **Watch the deep gates** on the six runs in flight. If `L2`–`L5` stay at ~0 while `L0` climbs, rerun with `midi_gate_init=0.1`.
-17. **Compare `valid_loss`, pair-with-MIDI vs pair-without** (GPU 5 vs 1, GPU 7 vs 3). Same data, same architecture, one variable — the cleanest test of whether conditioning helps.
-18. **Run the bridges and measure DPD / JD**, with `USE_MIDI=True` and `False` on the same checkpoints. Loss is not the project's metric; this is.
-19. **Listen** to `samples/` in W&B — the first generated audio the project has produced (Bug 12 kept the logger inert until 2026-09-07).
-20. Housekeeping: add `pretty_midi` + `basic-pitch` to `requirements.txt`; refresh the stale `hydra-core==1.2.0` pin; name the remaining cache dirs in `.gitignore`; delete the old `midi_outputs/cache_temp_midis*` trees.
+16. ~~Watch the deep gates~~ ✅ Answered, and the question was wrong. Gates shrank at sigma=100 while the benefit grew 12x — gate magnitude is a bad proxy. Use `train/midi_rel_magnitude`.
+17. ~~Compare `valid_loss`, pair-with-MIDI vs pair-without~~ ✅ 0.8-1.0% at sigma=5 (noise), 11-12% at sigma=100 (real).
+18. ~~Train at `sigma_max=100`~~ ✅ Six runs, 2026-10-06. The main result.
+19. **Finish the matrix** — four single-instrument no-MIDI runs launched 2026-10-06, ~10 hours. Then eight bridges are evaluable.
+20. **Build the new metrics** — Yuval, per [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). Polyphonic multipitch P/R against ground-truth MIDI, the paper's instrument classifier generalised to multi-label, FAD on EnCodec, and the per-instrument transcription ceiling.
+21. **Run the bridges and measure DPD / FAD** across the eight conditions. Loss is not the project's metric; this is.
+22. **Sweep `SIGMA_HANDOFF`** — `Run_timbre_transfer.py` now separates the sigma the weights were trained at from the sigma the two models meet at, so a `sigma_max=100` model can be sampled at 50, 20 or 5 with no retraining. The paper's Table III shows this is the melody-vs-timbre dial and nothing in this project has ever varied it.
+23. **Listen.** Still not done.
+24. Housekeeping: add `pretty_midi` + `basic-pitch` + `mir_eval` to `requirements.txt`; refresh the stale `hydra-core==1.2.0` pin; name the remaining cache dirs in `.gitignore`; delete `midi_outputs/cache_temp_midis*`; `scripts_chenyuv_old/` and `debug_midi_chenyuv_old/` were checked and hold nothing worth keeping.
+25. **Two branches are diverged.** `fix/midi-alignment-and-cache-cleanup` and `hybrid-timbre-interpolation` each carry commits the other lacks. Consolidate onto one. To move a single file across without touching history: `git checkout <branch> -- <path>` — it only adds files and cannot conflict.
+
+---
+
+## 📊 Evaluation
+
+`valid_loss` is not the project's metric and cannot answer the questions that matter (see the three caveats above). The real evaluation runs the bridge and measures the audio. **Yuval owns this work**; the full brief is [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md).
+
+### What exists
+
+| file | what |
+|---|---|
+| `evaluation/run_compare_20.sh` | driver: 20 fixed tracks x 2 conditions |
+| `evaluation/track_list_20.txt` | the fixed track list |
+| `evaluation/summarize_metrics.py` | mean and sd of DPD/JD per condition |
+| `evaluation/paired_compare.py` | per-track deltas between two conditions |
+| `evaluation/paired_stats.py` | sign test, Wilcoxon, 95% CI, and the effect size the run *could* have resolved |
+| `evaluation/prepare_fad_sets.py` | builds the real / generated folders for FAD |
+| `evaluation/compute_clap_fad.py` | FAD on CLAP embeddings; `frechet_distance` lives here and is reusable |
+| `evaluation_mono/`, `Run_timbre_transfer_mono.py` | the single-instrument equivalents |
+
+**The paired design is the good part.** Each track is run under both conditions and the difference taken *within* the track, which cancels the track-to-track spread — an order of magnitude larger than the effect. That is what makes n=20 usable for DPD at all; on synthetic data with a realistic spread it resolves ~0.02 DPD. **n=20 is not enough for FAD**, which fits a 512-dimensional distribution; that needs ~200.
+
+### What is missing
+
+The paper (§III-E) reports four metrics; we have two.
+
+- **Instrument classifier accuracy** — absent. In the paper's Table I this is what exposed that the GFB baseline had failed completely: excellent DPD, **0%** timbre accuracy. DPD alone cannot see that failure.
+- **FAD on EnCodec** — we compute FAD on CLAP instead. Both are legitimate; the numbers are on different scales and must never be compared to each other or to the paper's table.
+
+### ⚠️ DPD and JD cannot score a mixture
+
+Both start by reducing each frame to **one** note: `extract_dominating_melody` ([`pitch_tracking_utils.py:31`](audio_diffusion_pytorch/pitch_tracking_utils.py#L31)) takes `np.argmax` over the 12 folded pitch classes. When two instruments play different notes at the same instant, only the louder is scored — a model that preserved one voice and produced garbage for the other still scores well.
+
+JD is weaker still: it then collapses the whole sequence to a *set* of pitch classes, discarding time entirely. Over 17 seconds a chorale touches most of the twelve, so both sets come out nearly full and JD saturates near 0 regardless of outcome. The paper says as much (§IV-A). **Report both for comparability with Table I; do not base decisions on either when there are two instruments.**
+
+The polyphonic information is not lost — it is discarded one line *after* being computed. `basic-pitch` returns a full `[T, 88]`.
+
+### ⚠️ basic-pitch is fed the wrong sample rate
+
+`cals_pitch_metric` passes the waveform in with no resampling ([`pitch_tracking_utils.py:106`](audio_diffusion_pytorch/pitch_tracking_utils.py#L106)). Everything here is 24 kHz; basic-pitch expects 22050. Pitches read ~1.47 semitones sharp and frames run at 93.75 fps instead of 86.13.
+
+**This cancels for DPD and JD** — both sides take the identical wrong path — so the existing numbers are internally consistent and should not be "fixed". **It does not cancel against an absolute reference**, so any new metric scored against `stems_midi/` must resample to 22050 first.
+
+### ⚠️ The evaluation set is not held out
+
+`main_dataset/` holds 31,255 extracted track folders *and* `train/`, `valid/`, `test/` subfolders of un-extracted `.tar.bz2`. The extracted folders mix all three splits: all **8,004** tracks listed in the test archives are already extracted, so every one was in the training pool.
+
+Comparisons between conditions are unaffected — both sides see identical clips, and every conclusion here rests on differences. But the report cannot describe the evaluation as held-out, and a reviewer will ask.
 
 ---
 
