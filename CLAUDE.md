@@ -763,7 +763,7 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 17. ~~Compare `valid_loss`, pair-with-MIDI vs pair-without~~ ✅ 0.8-1.0% at sigma=5 (noise), 11-12% at sigma=100 (real).
 18. ~~Train at `sigma_max=100`~~ ✅ Six runs, 2026-10-06. The main result.
 19. **Finish the matrix** — four single-instrument no-MIDI runs launched 2026-10-06, ~10 hours. Then eight bridges are evaluable.
-20. **Build the new metrics** — Yuval, per [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). Polyphonic multipitch P/R against ground-truth MIDI, the paper's instrument classifier generalised to multi-label, FAD on EnCodec, and the per-instrument transcription ceiling.
+20. **Build the new metrics** — Yuval, per [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). `mir_eval.transcription` (polyphonic, 50 ms onset tolerance) against ground-truth MIDI as the primary number, `mir_eval.multipitch` alongside it so the gap between them measures timing drift, the paper's instrument classifier generalised to multi-label, FAD on EnCodec, and the per-instrument transcription ceiling.
 21. **Run the bridges and measure DPD / FAD** across the eight conditions. Loss is not the project's metric; this is.
 22. **Sweep `SIGMA_HANDOFF`** — `Run_timbre_transfer.py` now separates the sigma the weights were trained at from the sigma the two models meet at, so a `sigma_max=100` model can be sampled at 50, 20 or 5 with no retraining. The paper's Table III shows this is the melody-vs-timbre dial and nothing in this project has ever varied it.
 23. **Listen.** Still not done.

@@ -30,10 +30,11 @@ The missing classifier matters more than it looks. In the paper's Table I it is 
 | Decision | Reason |
 |---|---|
 | **DPD and JD stay exactly as they are** | They are the paper's numbers. Changing them breaks comparability with Table I. Report them, caveat them for mixtures, don't base decisions on them. |
-| **Primary content metric: `mir_eval.multipitch`** | Field standard, handles 1 and K voices identically, gives Precision and Recall separately. |
+| **Primary content metric: `mir_eval.transcription`** | The only option that is both polyphonic **and** time-tolerant. It matches note events and counts a match when the pitch is close enough and the onset falls within 50 ms. Field standard, handles 1 and K voices identically. |
+| **Secondary: `mir_eval.multipitch`** | Frame-by-frame, no time tolerance at all. Nearly free, since both sides are already frames. Its value is the **gap** against `transcription` — see §4a. |
 | **Compare against the dataset's ground-truth MIDI**, not against a transcription of the input | Every CocoChorales track ships `stems_midi/`. Transcribing both sides stacks two error sources; using the real score removes one for free. |
 | **Report P and R separately, not only F1** | Low recall = notes lost. Low precision = notes invented. At σ_max=100 the model generates from near-pure noise, which is exactly when a diffusion model invents plausible notes that were never played. F1 blurs the two; DPD cannot see the distinction at all. |
-| **No DTW in the new metric** | The bridge is a deterministic ODE on a fixed-length latent — 1280 steps in, 1280 out, no resampling. Output is frame-aligned to input by construction. DTW is insurance against a shift that cannot occur here. |
+| **Bounded time tolerance, not DTW** | 50 ms forgives the small drift a diffusion model may introduce. DTW's flexibility is *unbounded* — it will happily align a note at 3 s to one at 9 s if that lowers the total cost, and a note moved six seconds is not a melody that survived. See the rejected alternative at the end of §4a. |
 | **FAD: compute on EnCodec ourselves** | No `fadtk` install. Absolute values won't match the paper either way; we only need to rank our own runs. Keep the CLAP FAD too and report both. |
 | **Add the paper's classifier, generalised to multi-label** | See §4c. |
 | **200 clips** | Enough for FAD to be meaningful; DPD needs far fewer. |
@@ -212,17 +213,56 @@ Practical consequence for the metrics work: none. Build and run them as planned.
 
 ### a. Polyphonic content metric — the primary number
 
-`mir_eval.multipitch`, output transcription vs ground-truth MIDI.
+**`mir_eval.transcription.precision_recall_f1_overlap`**, output transcription vs ground-truth MIDI.
+
+It is the only standard metric that is **both** polyphonic and time-tolerant: it converts both sides to note events, then matches them, counting a note correct when the pitch is within tolerance **and** the onset falls within 50 ms. Several notes at the same instant are fine — the matching is note-level, not frame-level.
+
+**`mir_eval` needs no MIDI files.** It takes plain numpy arrays — `(onset, offset)` intervals and pitches in Hz. The file format never enters into it.
+
+Where each side comes from:
+
+| side | source | cost |
+|---|---|---|
+| reference | `stems_midi/*.mid` of the **input** track | free — `pretty_midi` already returns note objects with onset, offset and pitch |
+| estimate | basic-pitch on the **generated** audio | needs frames → note events: threshold, then merge contiguous runs. The original basic-pitch library does this; check whether the vendored PyTorch port exposes it |
+
+The output can only ever be transcribed — it is generated audio, there is no score for it. That is equally true of DPD today. **What changes is the reference side:** DPD transcribes the input too, so transcription error is counted twice and we compare two noisy readings. The dataset's MIDI is an exact reading, and removing one of the two error sources costs nothing.
+
+Settings and details:
 
 - resample audio to **22050** before transcription (§3c)
-- take the raw `[T, 88]`, **no octave folding, no argmax** (§3a, §3b)
-- render the ground truth at basic-pitch's frame rate; for K instruments, **OR the K rolls together** — the question is "should this note be sounding, from any instrument", not which instrument played it
-- report **Precision, Recall, F1** separately
-- threshold on basic-pitch's confidence: calibrate it on real recordings where the truth is known, rather than guessing
+- use the raw `[T, 88]` — **no octave folding, no argmax** (§3a, §3b)
+- for K instruments, **merge the K ground-truth rolls** — the question is "should this note be sounding, from any instrument", not which instrument played it
+- **set `offset_ratio=None`** so note endings are ignored. A diffusion model has no obligation to preserve note durations, and scoring them hides what we actually care about
+- report **Precision, Recall and F1 separately**. Low recall = notes lost. Low precision = notes invented. At σ_max=100 the model generates from near-pure noise, which is exactly when a diffusion model invents plausible notes that were never played
+- calibrate basic-pitch's confidence threshold on real recordings where the truth is known, rather than guessing
 
 Identical code path for 1 and K instruments; the only difference is how many ground-truth rolls get merged.
 
 **Attribution is explicitly out of scope.** Deciding which instrument played a detected note is source separation — much harder, and no metric in the paper attempts it.
+
+#### Why `multipitch` as well
+
+It needs no note-event conversion — both sides are already frames — so it is nearly free once the rest is built. But it has **no time tolerance whatsoever**; frames are matched by index.
+
+That strictness is the point. Run both and compare:
+
+| | reading |
+|---|---|
+| the two roughly agree | timing is intact; the strict number is trustworthy on its own |
+| `multipitch` much lower than `transcription` | **the model is shifting events in time** — a finding in its own right about what high σ does |
+
+Two numbers, two questions. That is cheaper and more informative than trying to build one metric that answers both.
+
+#### An alternative that was considered and rejected
+
+Warping the two `[88, T]` matrices against each other with multi-dimensional DTW *first*, then scoring the aligned pair with `multipitch`.
+
+It is technically sound — DTW works on sequences of vectors as readily as scalars — but it has a disqualifying flaw. **DTW finds the alignment that minimises the distance.** Scoring what remains after that means measuring the residue of something an optimiser has already worked to shrink; a model that badly scrambles its timing gets handed a warp path that makes it look fine.
+
+The timing information lives in the **cost of the warp path**, and that approach computes it and then discards it. DPD, whatever its other faults, does not make this mistake — the warp cost *is* what it reports.
+
+If flexibility beyond 50 ms is ever wanted, the right form is to report the warp cost as its own separate number alongside the content score, so that "wrong notes" and "right notes in the wrong place" stay distinguishable.
 
 ### b. The transcription ceiling — not optional
 
