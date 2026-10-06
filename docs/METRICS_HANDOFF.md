@@ -190,14 +190,21 @@ The MIDI cache lookup (`wav_dataset.py`) and `create_gt_midi_cache.py --instrume
 
 So the models were trained on test-split data, and `evaluation/track_list_20.txt` (`woodwind_track096001`–`096020`) is drawn from the same pool — with an 80/20 split, most of those 20 were probably training examples.
 
-**This does not invalidate comparisons between conditions** — both conditions see identical clips, so the difference between them is fair, and that is what every conclusion in this project rests on. It does mean absolute numbers are optimistic and we cannot claim held-out evaluation.
-
-A check is in progress: the test archives list **8,004 tracks**. If some of them were never extracted, those are genuinely unseen and the 200-clip evaluation set should be built from them.
+**Checked, and the answer is the bad one.** The test archives list 8,004 tracks. Every single one of them is already extracted:
 
 ```bash
-ls $D | grep _track | sort > /home/benshise/extracted_tracks.txt
-comm -23 /home/benshise/test_tracks.txt /home/benshise/extracted_tracks.txt | wc -l   # clean tracks
+comm -23 test_tracks.txt extracted_tracks.txt | wc -l
+0
 ```
+
+**There is no unseen data.** The entire official test split was absorbed into the training pool. A held-out evaluation is impossible without retraining all sixteen models on a restricted file list, which is not worth it.
+
+**What this does and does not invalidate:**
+
+- ✅ **Comparisons between conditions remain fully valid.** Both conditions see identical clips, so the difference between them is a fair measurement. Every conclusion this project has drawn rests on differences, not absolute values.
+- ❌ **Absolute numbers are optimistic**, and we cannot write "evaluated on held-out data". This needs to be stated plainly in the report — a reviewer will ask.
+
+Practical consequence for the metrics work: none. Build and run them as planned. Just don't describe the evaluation set as unseen.
 
 ---
 
@@ -275,7 +282,7 @@ All 85 epochs, batch 16.
 | cello | 0.588 | *training* | 0.599 | *training* |
 | bassoon | 0.531 | *training* | 0.546 | *training* |
 
-The four single-instrument no-MIDI runs were launched 2026-10-06 and finish in ~10 hours. After that the matrix supports **8 bridges**: flute+bassoon→violin+cello and cello→bassoon, each with and without MIDI, at each σ.
+The four single-instrument no-MIDI runs were launched 2026-10-06 and finish in ~10 hours. Their `runs/.hydra/overrides.yaml` were checked after launch and all four carry the right `exp=` and `sigma_max=` — worth repeating for any future batch, since a mis-pasted launch produces a correctly-named directory holding the wrong instrument, and nothing downstream would catch it. After that the matrix supports **8 bridges**: flute+bassoon→violin+cello and cello→bassoon, each with and without MIDI, at each σ.
 
 ⚠️ **`valid_loss` is not comparable across σ.** The loss is σ-weighted and drawn from a different noise distribution — the σ=100 models see a median σ roughly 10× higher. Comparing 0.667 to 0.592 is meaningless. Within a σ, MIDI vs no-MIDI is a fair comparison, and it is large: **~12% at σ=100 versus ~1% at σ=5**. Confirming that in DPD/FAD is the main thing these metrics are for.
 
