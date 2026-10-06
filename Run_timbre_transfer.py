@@ -28,16 +28,34 @@ SOURCE_MEAN_PATH   = "checkpoints/flute_bassoon_mean.pt"
 SOURCE_STD_PATH    = "checkpoints/flute_bassoon_std.pt"
 EXPERIMENT_NAME = os.environ.get("EXPERIMENT_NAME", "no_midi")
 
+# TRAINED_SIGMA_MAX is a property of the WEIGHTS, not a choice: it is the
+# strongest noise each model ever learned to handle. Sampling above it asks the
+# model about noise levels it has never seen.
 if EXPERIMENT_NAME == "no_midi":
     SOURCE_CKPT        = "our_checkpoints/flute_bassoon_nomidi_85ep/ckpts/epoch=83-valid_loss=0.592.ckpt"
     TARGET_CKPT        = "our_checkpoints/violin_cello_nomidi_85ep/ckpts/epoch=80-valid_loss=0.637.ckpt"
     USE_MIDI           = False
+    TRAINED_SIGMA_MAX  = 5
 elif EXPERIMENT_NAME == "original_midi":
     SOURCE_CKPT        = "our_checkpoints/flute_bassoon_gt_ms_85ep/ckpts/epoch=83-valid_loss=0.586.ckpt"
     TARGET_CKPT        = "our_checkpoints/violin_cello_gt_ms_85ep/ckpts/epoch=80-valid_loss=0.632.ckpt"
     USE_MIDI           = True
+    TRAINED_SIGMA_MAX  = 5
+elif EXPERIMENT_NAME == "no_midi_s100":
+    SOURCE_CKPT        = "our_checkpoints/flute_bassoon_nomidi_85ep_sigma100/ckpts/epoch=74-valid_loss=0.667.ckpt"
+    TARGET_CKPT        = "our_checkpoints/violin_cello_nomidi_85ep_sigma100/ckpts/epoch=82-valid_loss=0.699.ckpt"
+    USE_MIDI           = False
+    TRAINED_SIGMA_MAX  = 100
+elif EXPERIMENT_NAME == "original_midi_s100":
+    SOURCE_CKPT        = "our_checkpoints/flute_bassoon_gt_ms_85ep_sigma100/ckpts/epoch=79-valid_loss=0.593.ckpt"
+    TARGET_CKPT        = "our_checkpoints/violin_cello_gt_ms_85ep_sigma100/ckpts/epoch=82-valid_loss=0.612.ckpt"
+    USE_MIDI           = True
+    TRAINED_SIGMA_MAX  = 100
 else:
-    raise ValueError(f"Unknown EXPERIMENT_NAME={EXPERIMENT_NAME}. Use no_midi or original_midi.")
+    raise ValueError(
+        "Unknown EXPERIMENT_NAME=%s. Use one of: no_midi, original_midi, "
+        "no_midi_s100, original_midi_s100." % EXPERIMENT_NAME
+    )
 
 
 # ---- TARGET model (the instrument you want the OUTPUT to sound like) --------
@@ -103,8 +121,32 @@ SAMPLING_RATE      = 24000
 CLIP_LENGTH        = 409600     # 17 seconds @ 24kHz; model trained on this
 NUM_STEPS          = 100        # diffusion steps for each half of the bridge
 SIGMA_MIN          = 0.001
-SIGMA_MAX          = 5
 RHO                = 9.0
+
+# Where the two models MEET. The source model noises up to this level and the
+# target model denoises back down from it, so it is the melody <-> timbre dial
+# (the paper's sigma_{N-1}) -- NOT the sigma_max the models were trained with.
+#
+#   low  -> little noise added, the source survives, the target only repaints
+#           lightly. Melody kept, timbre barely moved.
+#   high -> almost everything washed out, the target generates freely.
+#           Strong timbre, melody at risk.
+#
+# Free to choose at inference, as long as it stays within what the weights saw.
+# Defaults to the trained value, which reproduces the old behaviour exactly.
+SIGMA_HANDOFF = float(os.environ.get("SIGMA_HANDOFF", TRAINED_SIGMA_MAX))
+
+if SIGMA_HANDOFF > TRAINED_SIGMA_MAX:
+    raise ValueError(
+        "SIGMA_HANDOFF=%g is above TRAINED_SIGMA_MAX=%g. These weights were "
+        "never trained at that noise level." % (SIGMA_HANDOFF, TRAINED_SIGMA_MAX)
+    )
+
+# Keep sweep outputs from overwriting each other. Downstream code reads the
+# env var rather than the constant, so set it there.
+if SIGMA_HANDOFF != TRAINED_SIGMA_MAX:
+    EXPERIMENT_NAME = "%s_h%g" % (EXPERIMENT_NAME, SIGMA_HANDOFF)
+    os.environ["EXPERIMENT_NAME"] = EXPERIMENT_NAME
 
 # ---- Plotting --------------------------------------------------------------
 # In a plain terminal there is no audio player; spectrogram plots are saved
@@ -256,12 +298,19 @@ def main():
     banner(f"Device: {device}")
 
     # ---- diffusion schedule / samplers -------------------------------------
+    # The distribution describes TRAINING noise and is unused at inference, but
+    # it is baked into the model object, so give it the value the weights know.
     diffusion_sigma_distribution = KDistribution(
-        sigma_min=SIGMA_MIN, sigma_max=SIGMA_MAX, rho=RHO
+        sigma_min=SIGMA_MIN, sigma_max=TRAINED_SIGMA_MAX, rho=RHO
     )
+    # The schedule is the actual sampling trajectory. Capping it at the handoff
+    # gives an honest partial bridge: a fresh Karras grid re-spread over the
+    # shorter range, so all NUM_STEPS are spent inside it.
     diffusion_schedule = KarrasSchedule(
-        sigma_min=SIGMA_MIN, sigma_max=SIGMA_MAX, rho=RHO
+        sigma_min=SIGMA_MIN, sigma_max=SIGMA_HANDOFF, rho=RHO
     )
+    print("  trained sigma_max %g | sampling handoff %g | %d steps per half"
+          % (TRAINED_SIGMA_MAX, SIGMA_HANDOFF, NUM_STEPS))
     diffusion_sampler_reverse = KarrasSamplerReverse()
     diffusion_sampler = KarrasSampler()
 
