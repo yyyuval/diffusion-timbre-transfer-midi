@@ -162,10 +162,26 @@ IoU 0.830 — 69 frames where a real note was missed, **281 frames where a note 
 The only list is `instrument_to_idx` ([`main/module_base_latent_cond.py:74-88`](../main/module_base_latent_cond.py#L74)) — 13 instruments. Three caveats:
 
 1. It lives inside `elif self.cond == "label"`, and **every** experiment config sets `cond: False`. It has never been constructed in any run, so it has never been validated against real filenames.
-2. `'double bass'` contains a **space**. Stem filenames use underscores, and the lookup is a substring match, so that key matches nothing.
+2. ~~`'double bass'` contains a space and so matches nothing.~~ **Corrected 2026-10-07:** the stem filenames also contain a space (`4_double bass.wav`), so that key is fine.
 3. It is a name→index map with no stem-number prefix (`1_`, `4_`), and the prefix varies by family.
 
-Enumerate from disk instead:
+**Enumerated from disk 2026-10-07, so the list below is now fact rather than assumption.** 31,255 tracks, four stems each (125,019 stems), 13 instruments:
+
+| ensemble | tracks | | instrument | stems | | instrument | stems |
+|---|---|---|---|---|---|---|---|
+| woodwind | 8,000 | | violin | 18,658 | | bassoon | 9,982 |
+| string | 8,000 | | clarinet | 11,909 | | trumpet | 9,907 |
+| random | 8,000 | | cello | 11,395 | | horn | 9,557 |
+| brass | 7,255 | | oboe | 10,551 | | tuba | 9,228 |
+| | | | flute | 10,541 | | trombone | 8,572 |
+| | | | viola | 10,374 | | saxophone | 2,337 |
+| | | | | | | double bass | 2,008 |
+
+Tracks holding **both** instruments of a pair: violin+cello **8,941**, flute+bassoon **8,586**. These match the counts in CLAUDE.md exactly.
+
+Note the counts exceed the ensemble sizes: a string quartet has two violins, and the `random` ensemble draws from all 13 — which is where saxophone and double bass come from, and why they are an order of magnitude rarer.
+
+The command, if it needs rerunning:
 
 ```bash
 D=/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset
