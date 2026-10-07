@@ -42,6 +42,13 @@ def parse_args():
     p.add_argument("--n", type=int, default=200)
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--cases", nargs="+", default=["poly", "mono"], choices=["poly", "mono"])
+    p.add_argument("--candidates-from", default=None,
+                   help="draw only from this file of track names, one per line, "
+                        "instead of every track in the family. Point it at "
+                        "tools/eval_set_pair.txt or tools/eval_set_mono.txt to "
+                        "restrict the evaluation to recordings neither model "
+                        "trained on -- see docs/METRICS_HANDOFF.md section 3l. "
+                        "Use {case} in the path to substitute the case name.")
     p.add_argument("--out-dir", default=str(ROOT / "evaluation"))
     p.add_argument("--skip-midi-check", action="store_true",
                    help="only check that the files exist, do not parse the MIDI")
@@ -84,7 +91,16 @@ def main():
 
     for case_name in args.cases:
         case = CASES[case_name]
-        candidates = list_family_tracks(args.dataset_root, case["family"])
+        if args.candidates_from:
+            # The official CocoChorales test split was fully absorbed into the
+            # training pool, so a track sampled from the family at large was
+            # almost certainly trained on. The recoverable held-out sets are the
+            # only unseen data this project still has.
+            src = Path(args.candidates_from.replace("{case}", case_name))
+            candidates = [l.strip() for l in src.read_text().splitlines() if l.strip()]
+            print("%s: %d candidates from %s" % (case_name, len(candidates), src))
+        else:
+            candidates = list_family_tracks(args.dataset_root, case["family"])
         accept, rejected = make_accept(args.dataset_root, case["stems"], not args.skip_midi_check)
         picked = pick_tracks(candidates, args.n, args.seed, accept=accept)
 
