@@ -229,20 +229,77 @@ All eight splits were replayed and each reproduced identically on a second run. 
 
 After also excluding tracks the *target* models saw (a `random` ensemble can hold both instrument pairs):
 
-| bridge | clean recordings |
+| bridge | clean recordings, all four architectures |
 |---|---|
 | flute+bassoon → violin+cello | **353** |
 | bassoon → cello | **393** |
 
-Both comfortably above the 200 this plan needs.
+### The three pools, and why there are three
+
+353 is a **four-way** intersection: held out by the source MIDI model, the source no-MIDI model, and absent from both target models' training. That is what a *paired* comparison needs — identical inputs in every condition — and 353 is plenty for the 200 the content metrics use.
+
+It is not enough for FAD. FAD fits a full covariance per side: 128 dimensions on EnCodec, **512 on CLAP**. Below n = D the covariance is singular and the score is biased upward. 353 clips cannot support a 512-D CLAP-FAD.
+
+The way out is that **FAD pairs nothing**. It compares two distributions, so each condition may use clips private to its own architecture. Dropping from a four-way to a two-way intersection (this architecture's source model held it out, this architecture's target model never saw it) multiplies the pool several times over.
+
+`evaluation/make_eval_pools.py` derives all three from `tools/splits.csv` and is the only place these rules live:
+
+| list | what it is | feeds |
+|---|---|---|
+| `pool_<case>_<arch>.txt` | source model held it out **and** target model never saw it | FAD |
+| `shared_<case>.txt` | in every architecture's pool — the 353 / 393 | the paired content metrics |
+| `reference_<case>.txt` | real **target**-instrument audio both target architectures held out | the FAD reference |
+
+`sigma_max` changes no parameter count, so a run and its `_sigma100` twin share a split: one list serves both, and their numbers stay directly comparable.
+
+### How the lists are laid out
+
+`make_track_lists.py --pool-dir tools/pools` writes one list per (case, architecture), **shared clips first**:
 
 ```
-tools/eval_set_pair.txt     353 track names
-tools/eval_set_mono.txt     393
-tools/splits.csv            the full per-model split
+track_list_poly_midi.txt      [ 200 shared ][ 800 private to the MIDI pool  ]
+track_list_poly_nomidi.txt    [ 200 shared ][ 800 private to the no-MIDI pool]
+                                 ^^^^^^^^^^ byte-identical in both files
 ```
 
-**Build the 200-clip lists from these, not by sampling the dataset at random.** It is the difference between writing "evaluated on held-out recordings" and having to caveat the whole results section. Regenerate with `python evaluation/dump_splits.py --check` if the files are missing.
+So a prefix is a valid paired set and the whole file is a valid FAD set:
+
+- `run_bridge_batched.py --n 200` slices exactly the shared clips out of every list.
+- the full 1000 goes to FAD.
+- `compute_content_metrics.py --track-list tools/pools/shared_poly.txt` selects the paired clips out of a CSV that holds all 1000. (`--limit` truncates the table — not the same thing, and it would silently mix conditions.)
+
+### Sample sizes, and the one honest compromise
+
+| metric | dimensions | needs | has |
+|---|---|---|---|
+| content (transcription F1/P/R, DPD, JD) | — paired, per clip | 200 | 353 / 393 ✓ |
+| EnCodec-FAD | 128 | a few hundred per side | 1000 generated ✓ |
+| CLAP-FAD | 512 | ≈ 1000 per side | 1000 generated ✓, **reference may fall short** |
+
+The generated side is solved. The **reference** side is the constraint: it must be real target audio *both* target architectures held out, and that is a two-way intersection of two validation sets — a few hundred clips, likely under 512.
+
+Two ways to live with that, in order of preference:
+
+1. **Lead with EnCodec-FAD.** It is 128-D, so a 400-clip reference is comfortable, and it is also the paper's metric. CLAP-FAD becomes a secondary number with the caveat attached.
+2. **`--pad-reference-to 1000`.** Tops the reference up from the target family at large. Those clips *were* in the target models' training data, so the absolute FAD becomes optimistic — but **every condition shares the one reference**, so the bias is common and the ranking between conditions survives. The script prints which route it took and records `n_reference` in the CSV. Use it for CLAP and say so in the report.
+
+What does *not* work is giving each condition its own clean reference. The references would differ between MIDI and no-MIDI, and comparing their FADs would mean nothing — which is the entire point of the experiment.
+
+### On the timbre classifier — no constraint at all
+
+It is trained from scratch on EnCodec embeddings of real stems, and it never sees generated audio while training. Nothing stops it using clips the diffusion models trained on; the labels come from the filenames and are correct either way. It needs only its own held-out split of **real** stems to prove it recognises real instruments before it is pointed at outputs (`--val-fraction`, already there).
+
+CLAP is a different thing again: it is a frozen pretrained encoder. Nothing about it is trained here, so "training data" does not apply to it — only to the *number of clips* its 512 dimensions need.
+
+### Commands, in order
+
+```bash
+python evaluation/dump_splits.py --check --out tools/splits.csv   # ~2.5 h, only if missing
+python evaluation/make_eval_pools.py --splits tools/splits.csv --out-dir tools/pools
+python evaluation/make_track_lists.py --pool-dir tools/pools --n-content 200 --n-fad 1000
+```
+
+The second prints every pool size. **Read that table before launching the bridge** — it is what decides whether CLAP-FAD needs padding.
 
 One caveat remains and should be stated in the report: checkpoint *selection* used validation loss, so these recordings influenced which weights were kept. That is model selection, not model fitting — far milder than training on them, and the selection was on denoising loss rather than on any metric reported here.
 
