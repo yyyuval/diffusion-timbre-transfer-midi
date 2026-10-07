@@ -485,7 +485,12 @@ def main():
         for c in experiment_name
     )
 
-    audio_archive_dir = Path("Outputs/WAV_files/metrics_mono/audio")
+    # Both developers share this checkout, and a directory created by one of
+    # them is not writable by the other -- torchaudio.save then fails with a
+    # bare "System error" that looks like an audio problem (Bug 4). Point
+    # METRICS_ROOT somewhere you own instead of fighting the permissions.
+    metrics_root = Path(os.environ.get("METRICS_ROOT", "Outputs/WAV_files/metrics_mono"))
+    audio_archive_dir = metrics_root / "audio"
     audio_archive_dir.mkdir(parents=True, exist_ok=True)
 
     archived_output_audio_path = (
@@ -516,7 +521,7 @@ def main():
     print(f"  JD  (Jaccard distance):                                   {round(jaccard, 2)}")
 
     # ---- save pitch metrics to CSV -----------------------------------------
-    metrics_path = Path("Outputs/WAV_files/metrics_mono/inference_metrics_mono.csv")
+    metrics_path = Path(os.environ.get("METRICS_ROOT", "Outputs/WAV_files/metrics_mono")) / "inference_metrics_mono.csv"
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     experiment_name = os.environ.get("EXPERIMENT_NAME", "manual_run")
