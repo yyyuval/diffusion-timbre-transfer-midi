@@ -302,11 +302,16 @@ def pick_tracks(
     seed: int,
     accept=None,
     exclude: Iterable[str] = (),
+    allow_short: bool = False,
 ) -> List[str]:
     """Seeded shuffle of the sorted candidates, keep the first n that pass `accept`.
 
     Sorting first makes the result independent of directory listing order.
     Returned sorted, so the list reads naturally and diffs cleanly.
+
+    `allow_short` returns a short list instead of raising. Use it only where the
+    caller reports the shortfall -- a pool that cannot fill a FAD set is a fact
+    about the data, not an error, but it must not pass unnoticed.
     """
     excluded = set(exclude)
     pool = sorted(c for c in candidates if c not in excluded)
@@ -317,7 +322,7 @@ def pick_tracks(
             picked.append(track)
             if len(picked) == n:
                 break
-    if len(picked) < n:
+    if len(picked) < n and not allow_short:
         raise RuntimeError("only %d usable tracks, %d requested" % (len(picked), n))
     return sorted(picked)
 

@@ -83,6 +83,11 @@ def parse_args():
                    help="explicit pair:h1,h2 specs; overrides --pairs/--handoffs/--baseline")
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--n", type=int, default=None, help="only the first N tracks of each list")
+    p.add_argument("--track-list-dir", default=None,
+                   help="prefer <dir>/track_list_<case>_<midi|nomidi>.txt, the "
+                        "per-architecture lists make_track_lists.py --pool-dir "
+                        "writes. Falls back to the --track-list-<case> default "
+                        "when the file is absent.")
     p.add_argument("--track-list-poly", default=CASES["poly"]["track_list"])
     p.add_argument("--track-list-mono", default=CASES["mono"]["track_list"])
     p.add_argument("--track-list-mono-b2c", default=CASES["mono_b2c"]["track_list"])
@@ -118,12 +123,29 @@ def selected_jobs(args):
     return build_jobs(pairs, args.handoffs)
 
 
-def track_list_for(args, case_name):
-    return {
+def track_list_for(args, cfg):
+    """The clip list for one model pair, as a repo-relative path.
+
+    A pair's list depends on its architecture as well as its direction: the
+    MIDI and no-MIDI models of the same dataset landed on different validation
+    splits, so each has its own pool of clips it never trained on. sigma_max
+    does not change the split, so a pair and its _s100 twin share a list and
+    their numbers stay comparable.
+    """
+    case_name = cfg["case"] if isinstance(cfg, dict) else cfg
+    fallback = {
         "poly": args.track_list_poly,
         "mono": args.track_list_mono,
         "mono_b2c": args.track_list_mono_b2c,
     }[case_name]
+    if not args.track_list_dir or not isinstance(cfg, dict):
+        return fallback
+    arch = "midi" if cfg["use_midi"] else "nomidi"
+    rel = os.path.join(args.track_list_dir, "track_list_%s_%s.txt" % (case_name, arch))
+    if os.path.isfile(rel) or os.path.isfile(os.path.join(args.repo_path, rel)):
+        return rel
+    print("no %s -- falling back to %s" % (rel, fallback))
+    return fallback
 
 
 def ckpts_for(args, pair, n_pairs):
@@ -142,6 +164,8 @@ def passthrough_args(args):
            "--repo-path", args.repo_path, "--dataset-root", args.dataset_root,
            "--track-list-poly", args.track_list_poly, "--track-list-mono", args.track_list_mono,
            "--track-list-mono-b2c", args.track_list_mono_b2c]
+    if args.track_list_dir:
+        out += ["--track-list-dir", args.track_list_dir]
     if args.n is not None:
         out += ["--n", str(args.n)]
     if args.no_dpd:
@@ -359,7 +383,7 @@ def run_jobs(args, jobs):
     for pair, handoffs in jobs:
         cfg = MODEL_PAIRS[pair]
         case = CASES[cfg["case"]]
-        tracks = read_track_list(track_list_for(args, cfg["case"]))
+        tracks = read_track_list(track_list_for(args, cfg))
         if args.n is not None:
             tracks = tracks[:args.n]
         exps = {h: experiment_name(pair, cfg["trained_sigma"], h) for h in handoffs}
@@ -469,7 +493,7 @@ def verify(args):
                          "(Run_timbre_transfer.py) or a mono_* bassoon->cello pair "
                          "(Run_timbre_transfer_mono.py); the code path is the same." % pair)
     exp = experiment_name(pair, cfg["trained_sigma"], handoff)
-    tracks = read_track_list(os.path.join(args.repo_path, track_list_for(args, cfg["case"])))
+    tracks = read_track_list(os.path.join(args.repo_path, track_list_for(args, cfg)))
     track = args.verify_track or tracks[0]
     others = [t for t in tracks if t != track][:max(0, args.verify_batch - 1)]
 

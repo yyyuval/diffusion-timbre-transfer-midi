@@ -52,6 +52,15 @@ def parse_args():
     p.add_argument("--source", default="flute_bassoon", help="Source ensemble name")
     p.add_argument("--note-threshold", type=float, default=0.5)
     p.add_argument("--limit", type=int, default=None, help="Max rows to score")
+    p.add_argument("--track-list", type=Path, default=None,
+                   help="score only these sample_ids, one per line. The bridge CSV "
+                        "holds ~1000 clips per experiment because FAD needs them, "
+                        "but only the clips EVERY architecture held out can be "
+                        "compared clip by clip. Point this at the paired prefix "
+                        "(the first --n-content lines of any track_list_*.txt, or "
+                        "tools/pools/shared_<case>.txt) so the paired test in "
+                        "paired_stats.py is valid. --limit truncates the table; "
+                        "this selects from it, which is not the same thing.")
     p.add_argument("--device", default="cpu", help="cpu / cuda / mps — model runs on CPU by default")
     return p.parse_args()
 
@@ -78,6 +87,18 @@ def main():
     df = pd.read_csv(args.metrics_csv)
     if args.experiments:
         df = df[df["experiment"].isin(args.experiments)].copy()
+    if args.track_list is not None:
+        wanted = [l.strip() for l in args.track_list.read_text().splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+        before = len(df)
+        df = df[df["sample_id"].astype(str).isin(set(wanted))].copy()
+        print("track list %s: %d ids -> %d of %d rows kept"
+              % (args.track_list, len(wanted), len(df), before))
+        per_exp = df.groupby("experiment")["sample_id"].nunique()
+        if per_exp.nunique() > 1:
+            print("WARNING: the experiments do not cover the same clips -- %s.\n"
+                  "         A paired test needs identical inputs; score only the "
+                  "clips common to all of them." % per_exp.to_dict())
     if df.empty:
         raise SystemExit("No rows to score after filtering.")
 
