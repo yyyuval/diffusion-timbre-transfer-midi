@@ -8,12 +8,21 @@ clips, crop from the start). Reference and generated embeddings are cached
 next to the audio, so re-runs only embed what is new.
 
 The embedder and the distance are imported from compute_clap_fad.py unchanged.
-FAD fits a 512-D Gaussian; at n=200 per side it is at the low end of usable and
-still noisy -- read differences between conditions, not absolute values, and
-never compare these numbers with EnCodec-FAD or the paper's table.
 
-  python evaluation/compute_clap_fad_200.py
-  python evaluation/compute_clap_fad_200.py --cases mono --n-ref 200
+**On sample size.** CLAP embeddings are 512-D. A Frechet distance fits a full
+covariance per side, so with fewer than 512 clips the estimate is singular and
+the score is biased upward by an amount that depends mostly on n. Two
+consequences: absolute values are meaningless below ~1000 per side, and
+differences between conditions survive anyway *as long as every condition uses
+the same n*. The bridge lists hold 1000 clips for exactly this reason. The
+reference side is the one that may fall short, because the clips neither target
+model trained on are finite -- --pad-reference-to tops it up and says so.
+
+EnCodec-FAD is 128-D and needs far less, which is one reason it, not this, is
+the number to lead with. Never compare the two scales.
+
+  python evaluation/compute_clap_fad_200.py --track-list-dir evaluation
+  python evaluation/compute_clap_fad_200.py --cases mono --pad-reference-to 1000
 """
 
 from __future__ import annotations
@@ -50,8 +59,23 @@ def parse_args():
     p.add_argument("--bridge-csv", default=None, help="default: <out-root>/bridge_metrics_all.csv")
     p.add_argument("--dataset-root", default=DATASET_ROOT)
     p.add_argument("--cases", nargs="+", default=["poly", "mono"], choices=["poly", "mono"])
-    p.add_argument("--n-ref", type=int, default=200)
+    p.add_argument("--n-ref", type=int, default=1000)
     p.add_argument("--seed", type=int, default=2026)
+    p.add_argument("--reference-from", default="tools/pools/reference_{case}.txt",
+                   help="candidate real target tracks, one per line -- by default "
+                        "the clips BOTH target architectures held out, so no "
+                        "condition is measured against audio its own generator "
+                        "memorised. {case} is substituted. A missing file falls "
+                        "back to the whole family, which is mostly training data.")
+    p.add_argument("--pad-reference-to", type=int, default=None,
+                   help="if the clean reference pool is smaller than this, top it "
+                        "up from the reference family at large. The padding WAS "
+                        "seen in training; it biases every condition by the same "
+                        "amount, so use it to reach the n CLAP needs and then read "
+                        "only the differences.")
+    p.add_argument("--track-list-dir", default=None,
+                   help="also exclude every track_list_*.txt in here from the "
+                        "reference, so no clip is both an input and a reference")
     p.add_argument("--exclude-track-lists", nargs="*",
                    default=[CASES["poly"]["track_list"], CASES["mono"]["track_list"]])
     p.add_argument("--experiments", nargs="*", default=None)
@@ -60,8 +84,58 @@ def parse_args():
     return p.parse_args()
 
 
-def build_reference(case_name, ref_dir, dataset_root, n_ref, seed, exclude):
-    """Write n_ref real target clips; idempotent, keeps what already exists."""
+def choose_reference_tracks(case_name, dataset_root, n_ref, seed, exclude,
+                            reference_from=None, pad_to=None):
+    """Which real target recordings the reference set is built from.
+
+    Clean pool first -- clips both target architectures held out, so no
+    condition is scored against audio its own generator may have memorised. If
+    that pool cannot fill n_ref, stop there unless --pad-reference-to was
+    given, and either way say which it was: that distinction decides whether
+    the absolute FAD means anything.
+    """
+    case = CASES[case_name]
+    stems = case["reference_stems"]
+
+    def accept(track):
+        return all(os.path.isfile(p) and os.path.getsize(p) > 0
+                   for p in stem_paths(dataset_root, track, stems))
+
+    clean_path = Path(reference_from.replace("{case}", case_name)) if reference_from else None
+    if clean_path is None or not clean_path.is_file():
+        if clean_path is not None:
+            print("  no %s -- drawing the reference from the whole %s family, which is\n"
+                  "  mostly training data of the target models."
+                  % (clean_path, case["reference_family"]))
+        return pick_tracks(list_family_tracks(dataset_root, case["reference_family"]),
+                           n_ref, seed, accept=accept, exclude=exclude)
+
+    tracks = pick_tracks(read_track_list(clean_path), n_ref, seed,
+                         accept=accept, exclude=exclude, allow_short=True)
+    print("  reference pool: %d clean clips from %s" % (len(tracks), clean_path))
+    if len(tracks) >= n_ref:
+        return tracks
+
+    if not pad_to or pad_to <= len(tracks):
+        print("  only %d clean reference clips, %d asked for. Keeping it clean.\n"
+              "  Under 512 the CLAP covariance is singular -- lead with EnCodec-FAD,\n"
+              "  or pass --pad-reference-to %d." % (len(tracks), n_ref, n_ref))
+        return tracks
+
+    extra = pick_tracks(list_family_tracks(dataset_root, case["reference_family"]),
+                        pad_to - len(tracks), seed, accept=accept,
+                        exclude=set(exclude) | set(tracks), allow_short=True)
+    print("  PADDED with %d %s clips from outside the clean pool, reaching %d.\n"
+          "  Those were in the target models' training data. Every condition shares\n"
+          "  this one reference, so the bias is common and the ranking holds; the\n"
+          "  absolute value does not."
+          % (len(extra), case["reference_family"], len(tracks) + len(extra)))
+    return sorted(set(tracks) | set(extra))
+
+
+def build_reference(case_name, ref_dir, dataset_root, n_ref, seed, exclude,
+                    reference_from=None, pad_to=None):
+    """Write the real target clips; idempotent, keeps what already exists."""
     import torchaudio
 
     case = CASES[case_name]
@@ -70,12 +144,11 @@ def build_reference(case_name, ref_dir, dataset_root, n_ref, seed, exclude):
     list_path = ref_dir.parent / "reference_tracks.txt"
     if list_path.is_file():
         tracks = read_track_list(list_path)
+        print("  reference list was frozen earlier: %s (%d clips)" % (list_path, len(tracks)))
     else:
-        def accept(track):
-            return all(os.path.isfile(p) and os.path.getsize(p) > 0
-                       for p in stem_paths(dataset_root, track, stems))
-        tracks = pick_tracks(list_family_tracks(dataset_root, case["reference_family"]),
-                             n_ref, seed, accept=accept, exclude=exclude)
+        tracks = choose_reference_tracks(case_name, dataset_root, n_ref, seed, exclude,
+                                         reference_from, pad_to)
+        list_path.parent.mkdir(parents=True, exist_ok=True)
         list_path.write_text("\n".join(tracks) + "\n")
     for i, track in enumerate(tracks, 1):
         out = ref_dir / ("%s.wav" % track)
@@ -133,8 +206,14 @@ def main():
     if args.experiments:
         rows = [r for r in rows if r["experiment"] in args.experiments]
 
+    # A clip must never be both an input and a reference: it would then be
+    # compared against its own transformation.
     exclude = {r["sample_id"] for r in rows}
-    for path in args.exclude_track_lists or []:
+    exclude_lists = list(args.exclude_track_lists or [])
+    if args.track_list_dir:
+        exclude_lists += [str(q) for q in
+                          sorted(Path(args.track_list_dir).glob("track_list_*.txt"))]
+    for path in exclude_lists:
         if Path(path).is_file():
             exclude.update(read_track_list(path))
 
@@ -159,7 +238,8 @@ def main():
         print("=" * 70)
         print("  %s: reference = real %s" % (case_name, CASES[case_name]["reference_ensemble"]))
         print("=" * 70, flush=True)
-        build_reference(case_name, ref_dir, args.dataset_root, args.n_ref, args.seed, exclude)
+        build_reference(case_name, ref_dir, args.dataset_root, args.n_ref, args.seed,
+                        exclude, args.reference_from, args.pad_reference_to)
         ref_emb = cached_embeddings(ref_dir, fad_dir / "reference_clap.npz", model, processor, device)
 
         mid = ref_emb.shape[0] // 2
@@ -199,7 +279,9 @@ def main():
         writer.writeheader()
         writer.writerows(results)
     print("\nSaved %s" % out_csv)
-    print("Note: FAD at n=200 in 512-D is noisy. Compare conditions; do not read absolute values.")
+    print("Note: CLAP-FAD fits a 512-D covariance. Check n_reference and n_generated in\n"
+          "      the CSV: below ~1000 per side, compare conditions only -- never absolute\n"
+          "      values -- and lead with EnCodec-FAD (128-D), which is the paper's metric.")
 
 
 if __name__ == "__main__":

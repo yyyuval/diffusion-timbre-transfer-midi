@@ -820,7 +820,16 @@ The polyphonic information is not lost — it is discarded one line *after* bein
 
 `main_dataset/` holds 31,255 extracted track folders *and* `train/`, `valid/`, `test/` subfolders of un-extracted `.tar.bz2`. The extracted folders mix all three splits: all **8,004** tracks listed in the test archives are already extracted, so every one was in the training pool.
 
-Comparisons between conditions are unaffected — both sides see identical clips, and every conclusion here rests on differences. But the report cannot describe the evaluation as held-out, and a reviewer will ask.
+Comparisons between conditions are unaffected — both sides see identical clips, and every conclusion here rests on differences.
+
+**A held-out set was recovered anyway, out of the split bug.** Because the unseeded `randperm` gives a MIDI model and a no-MIDI model different splits, a recording held out by *both* was trained on by neither. `evaluation/dump_splits.py` replays each run's startup to recover its split; all eight reproduced identically on a second run, and the intersection sizes match the independence prediction to within a few recordings (cello 458 vs 455.8 predicted). After also excluding tracks the target models saw:
+
+| bridge | clean recordings |
+|---|---|
+| flute+bassoon → violin+cello | **353** |
+| bassoon → cello | **393** |
+
+Written to `tools/eval_set_pair.txt` and `tools/eval_set_mono.txt`. Evaluation sets should be drawn from these. The remaining caveat for the report: checkpoint selection used validation loss, so these recordings influenced which weights were kept — model selection, not model fitting.
 
 ---
 
