@@ -787,7 +787,11 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 | `evaluation/paired_stats.py` | sign test, Wilcoxon, 95% CI, and the effect size the run *could* have resolved |
 | `evaluation/prepare_fad_sets.py` | builds the real / generated folders for FAD |
 | `evaluation/compute_clap_fad.py` | FAD on CLAP embeddings; `frechet_distance` lives here and is reusable |
-| `evaluation_mono/`, `Run_timbre_transfer_mono.py` | the single-instrument equivalents |
+| `evaluation_mono/`, `Run_timbre_transfer_mono.py` | the single-instrument equivalents (note: bassoon → cello) |
+| `evaluation/run_200.sh` | driver for the 200-clip sigma_handoff sweep: `tracks`, `verify`, `split`/`launch`, `status`, `metrics` |
+| `evaluation/run_bridge_batched.py` | batched bridge: loads each model pair once, sweeps `--handoffs` off the same weights; `--verify` checks it against `Run_timbre_transfer.py`; writes `<OUT_ROOT>/csv/<experiment>.csv` with `sigma_handoff` as a real column |
+| `evaluation/bridge_200.py` | the pair/condition table (poly flute_bassoon → violin_cello, mono **cello → bassoon** as `mono_c2b_*`), shared pure helpers |
+| `evaluation/make_track_lists.py`, `compute_clap_fad_200.py`, `summarize_200.py` | seeded 200-track lists; CLAP-FAD per experiment vs real target audio from tracks not used as inputs; summary table, paired MIDI vs no-MIDI per handoff, plots |
 
 **The paired design is the good part.** Each track is run under both conditions and the difference taken *within* the track, which cancels the track-to-track spread — an order of magnitude larger than the effect. That is what makes n=20 usable for DPD at all; on synthetic data with a realistic spread it resolves ~0.02 DPD. **n=20 is not enough for FAD**, which fits a 512-dimensional distribution; that needs ~200.
 
