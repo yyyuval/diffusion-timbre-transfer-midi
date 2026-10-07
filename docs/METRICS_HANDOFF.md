@@ -221,7 +221,30 @@ comm -23 test_tracks.txt extracted_tracks.txt | wc -l
 - ✅ **Comparisons between conditions remain fully valid.** Both conditions see identical clips, so the difference between them is a fair measurement. Every conclusion this project has drawn rests on differences, not absolute values.
 - ❌ **Absolute numbers are optimistic**, and we cannot write "evaluated on held-out data". This needs to be stated plainly in the report — a reviewer will ask.
 
-Practical consequence for the metrics work: none. Build and run them as planned. Just don't describe the evaluation set as unseen.
+**But there is a second route, and it works.** Recovered 2026-10-07 with `evaluation/dump_splits.py`.
+
+The train/val split is drawn by an unseeded `torch.randperm` that runs *after* model construction has consumed the global RNG, so a MIDI model and a no-MIDI model trained on identical data land on **different** splits (§3 of CLAUDE.md). That bug is the opening: a recording held out by *both* architectures was trained on by **neither**.
+
+All eight splits were replayed and each reproduced identically on a second run. The intersections land exactly where independence predicts — 458 against a predicted 455.8 for cello, 400 against 399.2 for bassoon — which independently confirms the two permutations really are uncorrelated.
+
+After also excluding tracks the *target* models saw (a `random` ensemble can hold both instrument pairs):
+
+| bridge | clean recordings |
+|---|---|
+| flute+bassoon → violin+cello | **353** |
+| bassoon → cello | **393** |
+
+Both comfortably above the 200 this plan needs.
+
+```
+tools/eval_set_pair.txt     353 track names
+tools/eval_set_mono.txt     393
+tools/splits.csv            the full per-model split
+```
+
+**Build the 200-clip lists from these, not by sampling the dataset at random.** It is the difference between writing "evaluated on held-out recordings" and having to caveat the whole results section. Regenerate with `python evaluation/dump_splits.py --check` if the files are missing.
+
+One caveat remains and should be stated in the report: checkpoint *selection* used validation loss, so these recordings influenced which weights were kept. That is model selection, not model fitting — far milder than training on them, and the selection was on denoising loss rather than on any metric reported here.
 
 ---
 
