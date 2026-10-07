@@ -51,9 +51,9 @@ hydra:
 # ignore_warnings: False
 # print_config: False # Prints tree with all configurations
 # work_dir: ${hydra:runtime.cwd}  # This is the root of the project
-# logs_dir: ${work_dir}/logs  # נתיב ישיר ללוגים
-# data_dir: ${work_dir}/data  # נתיב ישיר לדאטה
-# dataset_path: ${data_dir} # <--- השורה החדשה שהוספנו
+# logs_dir: ${work_dir}/logs  # direct path to the logs
+# data_dir: ${work_dir}/data  # direct path to the data
+# dataset_path: ${data_dir} # <--- the new line we added
 # exp_tag: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 # output_dir: ${logs_dir}/${exp_tag}
 # ckpt_dir: ${output_dir}/ckpts
