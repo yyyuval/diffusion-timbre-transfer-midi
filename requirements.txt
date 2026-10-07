@@ -27,3 +27,6 @@ fastdtw
 nnAudio
 tensorboard
 torchvision
+pretty_midi
+mir_eval
+scikit-learn
