@@ -78,6 +78,8 @@ def parse_args():
         ),
     )
     p.add_argument("--instruments", nargs="*", default=DEFAULT_INSTRUMENTS)
+    p.add_argument("--exclude-track-lists", nargs="*", type=Path, default=[],
+                   help="Exclude these track IDs from classifier training and validation")
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -243,6 +245,13 @@ def train(args):
 
     print("Listing stems…")
     stem_files = list_stem_files(args.dataset_root, args.instruments, args.max_tracks)
+    excluded = set()
+    for path in args.exclude_track_lists:
+        for line in path.read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                excluded.add(line.strip().split("/")[0])
+    stem_files = [(p, i) for p, i in stem_files if p.parent.parent.name not in excluded]
+    print("Excluded evaluation/reference tracks:", len(excluded))
     if len(stem_files) < 50:
         raise SystemExit("Too few stems found (%d). Check --dataset-root." % len(stem_files))
     print("Found %d stem files" % len(stem_files))
@@ -255,6 +264,13 @@ def train(args):
     train_stems = [(p, i) for p, i in stem_files if p.parent.parent not in val_tracks]
     val_stems = [(p, i) for p, i in stem_files if p.parent.parent in val_tracks]
 
+    args.ckpt.parent.mkdir(parents=True, exist_ok=True)
+    args.ckpt.with_suffix(".split.json").write_text(json.dumps({
+        "excluded_tracks": sorted(excluded),
+        "train_tracks": sorted({p.parent.parent.name for p, _ in train_stems}),
+        "validation_tracks": sorted({p.parent.parent.name for p, _ in val_stems}),
+        "seed": args.seed,
+    }, indent=2))
     print("Encoding with EnCodec…")
     enc = NormalizedEncodec(device=device)
     train_items = build_embeddings(train_stems, args.instruments, enc, device_t, args.mix_prob)
@@ -374,6 +390,7 @@ def eval_generated(args):
                 "file": path.name,
                 "pred": ",".join(pred),
                 "target_ok": hit,
+                "target_exact": set(pred) == set(target) if target else None,
                 **{instruments[i]: float(prob[i]) for i in range(len(instruments))},
             }
         )
