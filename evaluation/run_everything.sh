@@ -128,7 +128,7 @@ for path in sorted(glob.glob(os.path.join(d, "*.csv"))):
     rows = list(csv.DictReader(io.open(path, encoding="utf-8")))
     if not rows:
         continue
-    cols = [c for c in rows[0] if c.lower() in ("f1", "note_f1", "frame_f1", "precision", "recall")]
+    cols = [c for c in rows[0] if c.startswith(("transcription_", "multipitch_f1"))]
     def mean(c):
         vals = [float(r[c]) for r in rows if r.get(c) not in (None, "")]
         return sum(vals) / len(vals) if vals else float("nan")
