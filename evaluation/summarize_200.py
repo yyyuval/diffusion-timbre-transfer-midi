@@ -190,7 +190,7 @@ def plot_metric(df, table, case, metric, out_png, ceiling=None):
                     label="%s, trained sigma %g" % (label, base["trained_sigma"].iloc[0]))
     if ceiling is not None:
         ax.axhline(ceiling, color="gray", ls="--",
-                   label="transcription ceiling (real input) %.3f" % ceiling)
+                   label="transcription ceiling (real audio) %.3f" % ceiling)
     ax.set_xlabel("sigma_handoff")
     ax.set_ylabel(metric + ("" if metric == "clap_fad" else "  (mean, 95% CI)"))
     trained = t["trained_sigma"].max() if not t.empty else float("nan")
@@ -250,7 +250,7 @@ def main():
         print("\n=== %s: %s ===" % (case, CASE_TITLE.get(case, case)))
         print(table[table["case"] == case][cols].to_string(index=False, float_format="%.4f"))
         if ceilings.get(case):
-            print("transcription ceiling (real input vs GT MIDI): %s"
+            print("transcription ceiling (real audio vs GT MIDI): %s"
                   % ", ".join("%s %.3f" % kv for kv in sorted(ceilings[case].items())))
     print("\nCLAP-FAD at n=200 in 512-D is noisy; compare conditions, not absolute values.")
     print("table  -> %s\npaired -> %s\nplots  -> %s" % (table_path, paired_path, plot_dir))
