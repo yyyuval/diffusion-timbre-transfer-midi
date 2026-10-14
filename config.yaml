@@ -27,6 +27,7 @@ midi_gate_init: 0.0
 midi_bins: 128              # 128 * number of instruments
 midi_cache_root: null       # null = MIDI off, nothing loaded
 mix_instruments: null       # e.g. [violin, cello] for two-instrument training
+midi_merged: false          # true = ONE roll for the whole mixture (midi_bins=128)
 
 exp_tag: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 output_dir: ${logs_dir}/${exp_tag}

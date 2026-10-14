@@ -22,6 +22,10 @@ dataset:
   # NOTE: putting two names in `instruments` does NOT do this. fast_scandir
   # matches on filename, so that yields separate samples of each instrument.
   mix_instruments: ${oc.select:mix_instruments,null}
+  # true reads one roll per track -- every instrument's notes merged into
+  # [128, T], with no record of which instrument plays which -- instead of
+  # one roll per stem. Needs mix_instruments, and midi_bins=128.
+  midi_merged: ${oc.select:midi_merged,false}
   transforms:
     _target_: audio_data_pytorch.AllTransform
     random_crop_size: ${length}

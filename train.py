@@ -47,12 +47,38 @@ dotenv.load_dotenv(override=True)
 log = utils.get_logger(__name__)
 
 
+def check_midi_layout(config: DictConfig) -> None:
+    """Stop before anything is built if midi_bins does not fit the roll layout.
+
+    A mismatch otherwise surfaces as a tensor-shape error inside the first
+    forward pass, after the datamodule has spent minutes scanning the dataset.
+    """
+    merged = bool(config.get("midi_merged", False))
+    if not config.get("use_midi", False):
+        if merged:
+            sys.exit("midi_merged=true has no effect without use_midi=true -- "
+                     "this would train an unconditioned model under a MIDI name.")
+        return
+    mix = list(config.get("mix_instruments") or [])
+    if merged and len(mix) < 2:
+        sys.exit("midi_merged=true needs mix_instruments with two or more names.")
+    expected = 128 if (merged or not mix) else 128 * len(mix)
+    if int(config.midi_bins) != expected:
+        layout = ("merged: one roll for the whole mixture" if merged
+                  else "stacked: one 128-row roll per instrument" if mix
+                  else "single instrument")
+        sys.exit("midi_bins=%d does not match the roll layout (%s), which needs "
+                 "midi_bins=%d." % (int(config.midi_bins), layout, expected))
+
+
 @hydra.main(config_path=".", config_name="config.yaml", version_base=None)
 def main(config: DictConfig) -> None:
     OmegaConf.register_new_resolver("eval", eval)
 
     # Logs config tree
     utils.extras(config)
+
+    check_midi_layout(config)
 
     # Apply seed for reproducibility
     pl.seed_everything(config.seed)
