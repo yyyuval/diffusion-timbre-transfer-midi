@@ -1,9 +1,12 @@
 from pathlib import Path
 import argparse
 import shutil
-import subprocess
+import sys
 import numpy as np
 import pretty_midi
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import basic_pitch_cli  # noqa: E402
 
 
 def midi_to_pianoroll(midi_path: Path, out_path: Path, fps: int, velocity_threshold: float):
@@ -41,18 +44,18 @@ def run_basic_pitch(wav_path: Path, temp_midi_dir: Path) -> Path:
     if existing is not None:
         return existing
 
-    cmd = [
-        "basic-pitch",
-        str(temp_midi_dir),
-        str(wav_path),
-    ]
-
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The venv's own basic-pitch, with its output kept: this used to call
+    # whatever "basic-pitch" was on PATH and send stderr to /dev/null, so a
+    # failure said only "No MIDI file created".
+    proc = basic_pitch_cli.run_basic_pitch(temp_midi_dir, [wav_path])
 
     midi_path = find_existing_midi(wav_path, temp_midi_dir)
 
     if midi_path is None:
-        raise FileNotFoundError(f"No MIDI file created for {wav_path}")
+        raise FileNotFoundError(
+            f"No MIDI file created for {wav_path} (exit {proc.returncode}):\n"
+            + basic_pitch_cli.output_tail(proc)
+        )
 
     return midi_path
 
@@ -63,7 +66,8 @@ def main():
     parser.add_argument("--cache_root", type=str, default="midi_cache_bassoon_fps75")
     parser.add_argument("--temp_midi_root", type=str, default="midi_outputs/cache_temp_midis")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument("--fps", type=int, default=75,
+                        help="must match midi_fps in exp/datamodule/base.yaml")
     parser.add_argument("--velocity_threshold", type=float, default=40.0)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
