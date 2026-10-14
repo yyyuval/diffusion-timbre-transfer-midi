@@ -877,7 +877,7 @@ Every polyphonic MIDI model before 2026-10-14 was given one roll **per instrumen
 
 Both write `<track>/merged_<instruments>_pianoroll.npy`; the name comes from `merged_midi_name` in `wav_dataset.py` and nowhere else. Both keep the `.mid` beside it under `--midi_out_root`. `merge_midi.py` also checks every track: the merged roll must equal the element-wise OR of the stems' own rolls, and a track that fails is reported and **not** written. `merge_midi.py --inputs a.mid b.mid --out merged.mid` merges a single pair.
 
-Generated MIDI uses the official `basic-pitch` tool, not the in-repo port, so it is comparable with the earlier single-stem generated caches (threshold 40). It runs on CPU unless `--use_gpu`, because TensorFlow otherwise takes every visible GPU's memory from the training runs. It is resumable and takes `--shard i/n`.
+Generated MIDI uses the PyTorch port already in the repo (`audio_diffusion_pytorch/basic-pitch-torch`): the official ICASSP 2022 weights and the official `note_creation.py`, run with `predict()`'s own defaults and the earlier caches' velocity threshold of 40. The official tool is **not installed** on the server, and the port needs nothing new in `venv_yuval`. The mixture goes in by file path, so the port resamples it to 22.05 kHz itself. The port's `predict()` reloads the model from a relative path on every call, so the script loads it once and runs `predict()`'s body. It uses whichever GPU `CUDA_VISIBLE_DEVICES` shows, is resumable, and takes `--shard i/n`.
 
 ```bash
 python midi_preprocessing/merge_midi.py --dataset_root $D --instrument flute bassoon --cache_root midi_cache_wood_fps75_gt_merged --midi_out_root midi_gt_merged/wood
@@ -886,7 +886,7 @@ python midi_preprocessing/create_mixture_bp_midi_cache.py --dataset_root $D --in
 
 A training run adds `use_midi=true midi_merged=true midi_bins=128 midi_cache_root=<merged cache>` to the usual overrides. Run names: `<data>_{gtmerged,bpmerged}_ms_85ep[_sigma100]`. Four conditions are eight runs, because each bridge needs a flute+bassoon source and a violin+cello target trained the same way. Evaluating them needs new experiment entries with `MIDI_BINS=128`, not yet added.
 
-The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. All three now go through `midi_preprocessing/basic_pitch_cli.py`.
+The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. Both now go through `midi_preprocessing/basic_pitch_cli.py` — which still needs the official tool, not installed in `venv_yuval`.
 
 ### Mixture latent stats (in `checkpoints/`)
 

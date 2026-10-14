@@ -10,30 +10,38 @@ For every track that has all the named stems:
 
   1. sum the stems the way training does (load_mixture): mono, summed, and
      rescaled to 0.95 only if the sum would clip
-  2. transcribe the mixture with the official basic-pitch tool
+  2. transcribe the mixture with basic-pitch
   3. KEEP the .mid at <midi_out_root>/<track>/merged_<instruments>.mid -- it is
      the generated MIDI itself, and it makes re-rendering at another fps free
   4. render <cache_root>/<track>/merged_<instruments>_pianoroll.npy
 
-Transcription is by far the slow step, so many files go to one call of the tool
-(the model loads once), tracks whose .mid already exists are not transcribed
-again, and --shard splits the list between processes:
+basic-pitch here is the PyTorch port already in the repo
+(audio_diffusion_pytorch/basic-pitch-torch): the official ICASSP 2022 weights,
+and its note_creation.py is the official note-building code. The official tool
+is not installed on the server, and the port needs nothing new in venv_yuval.
+The audio goes in by file path, so the port's own loader resamples it to
+22.05 kHz -- the sample-rate trap in pitch_tracking_utils comes from handing
+the model 24 kHz tensors directly, and does not apply here.
 
-    for i in 0 1 2 3 4 5 6 7; do
-      python midi_preprocessing/create_mixture_bp_midi_cache.py --dataset_root $D \\
-        --instrument flute bassoon --shard $i/8 \\
+The port's predict() reloads the model from a relative path on every call, so
+it is not used: the model is loaded once and predict()'s own body is run with
+its own defaults. Resumable -- a track with a kept .mid is never transcribed
+again -- and --shard splits the list between processes:
+
+    for i in 0 1 2 3; do
+      CUDA_VISIBLE_DEVICES=4 python midi_preprocessing/create_mixture_bp_midi_cache.py \\
+        --dataset_root $D --instrument flute bassoon --shard $i/4 \\
         --cache_root midi_cache_wood_fps75_bp_merged --midi_out_root midi_bp_merged/wood &
     done
 
-The tool runs on CPU unless --use_gpu: TensorFlow otherwise takes the whole
-memory of every visible GPU, which is not something to do beside training runs.
+It uses whichever GPU CUDA_VISIBLE_DEVICES shows it, or the CPU if none.
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import List
@@ -42,11 +50,59 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-for p in (str(ROOT), str(HERE)):
+PORT_DIR = ROOT / "audio_diffusion_pytorch" / "basic-pitch-torch"
+WEIGHTS = PORT_DIR / "assets" / "basic_pitch_pytorch_icassp_2022.pth"
+for p in (str(ROOT), str(PORT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from basic_pitch_cli import expected_output, find_basic_pitch, output_tail, run_basic_pitch  # noqa: E402
+# predict()'s defaults, which are the official tool's defaults.
+ONSET_THRESHOLD = 0.5
+FRAME_THRESHOLD = 0.3
+MINIMUM_NOTE_LENGTH_MS = 127.70
+
+
+class Transcriber:
+    """The port's predict(), with the model loaded once instead of per call."""
+
+    def __init__(self):
+        import torch
+        from basic_pitch_torch.model import BasicPitchTorch
+
+        if not WEIGHTS.exists():
+            sys.exit("basic-pitch weights not found at %s" % WEIGHTS)
+        self.torch = torch
+        self.model = BasicPitchTorch()
+        self.model.load_state_dict(torch.load(str(WEIGHTS), map_location="cpu"))
+        self.model.eval()
+        # run_inference moves the audio to cuda whenever cuda is available, so
+        # the model has to follow the same rule or the two end up apart.
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device == "cuda":
+            self.model.cuda()
+
+    def __call__(self, wav_path: Path):
+        from basic_pitch_torch import note_creation
+        from basic_pitch_torch.constants import AUDIO_SAMPLE_RATE, FFT_HOP
+        from basic_pitch_torch.inference import run_inference
+
+        # run_inference does not turn autograd off; without this every call
+        # keeps the whole forward graph alive for nothing.
+        with self.torch.inference_mode():
+            model_output = run_inference(str(wav_path), self.model)
+        min_note_len = int(np.round(MINIMUM_NOTE_LENGTH_MS / 1000 * (AUDIO_SAMPLE_RATE / FFT_HOP)))
+        midi_data, _ = note_creation.model_output_to_notes(
+            model_output,
+            onset_thresh=ONSET_THRESHOLD,
+            frame_thresh=FRAME_THRESHOLD,
+            min_note_len=min_note_len,
+            min_freq=None,
+            max_freq=None,
+            multiple_pitch_bends=False,
+            melodia_trick=True,
+            midi_tempo=120,
+        )
+        return midi_data
 
 
 def build_mixture(stem_paths: List[Path]):
@@ -74,10 +130,8 @@ def build_mixture(stem_paths: List[Path]):
     return mixture, rate
 
 
-def render_roll(midi_path: Path, fps: int, velocity_threshold: float) -> np.ndarray:
-    import pretty_midi
-
-    pm = pretty_midi.PrettyMIDI(str(midi_path))
+def render_roll(pm, fps: int, velocity_threshold: float) -> np.ndarray:
+    """The same two lines every cache builder here uses."""
     return (pm.get_piano_roll(fs=fps) > velocity_threshold).astype(np.uint8)
 
 
@@ -99,27 +153,21 @@ def main():
     p.add_argument("--cache_root", required=True, help="where the merged rolls go")
     p.add_argument("--midi_out_root", required=True,
                    help="where the generated .mid files are kept, one folder per track")
-    p.add_argument("--work_dir", default=None,
-                   help="temporary mixtures and raw tool output; default <midi_out_root>/_work")
     p.add_argument("--fps", type=int, default=75,
                    help="must match midi_fps in exp/datamodule/base.yaml")
     p.add_argument("--velocity_threshold", type=float, default=40.0,
                    help="same as the existing generated caches; basic-pitch writes real velocities")
-    p.add_argument("--batch_size", type=int, default=32, help="files per call of the tool")
     p.add_argument("--shard", default="0/1", help="i/n: process every n-th track starting at i")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--overwrite", action="store_true",
                    help="re-render rolls that exist; the .mid is reused unless --retranscribe")
     p.add_argument("--retranscribe", action="store_true",
                    help="run basic-pitch again even where a .mid is kept")
-    p.add_argument("--use_gpu", action="store_true")
-    p.add_argument("--basic_pitch_bin", default=None)
     args = p.parse_args()
 
     if len(args.instrument) < 2:
         p.error("--instrument needs two or more names; for one stem use the single-stem scripts")
     shard_index, shard_count = parse_shard(args.shard)
-    binary = find_basic_pitch(args.basic_pitch_bin)
 
     from audio_data_pytorch.datasets.wav_dataset import (
         get_paired_stem_filenames,
@@ -136,11 +184,6 @@ def main():
     name = merged_midi_name(args.instrument)
     cache_root = Path(args.cache_root)
     midi_out_root = Path(args.midi_out_root)
-    work_dir = Path(args.work_dir) if args.work_dir else midi_out_root / "_work"
-    print("%d tracks (shard %d/%d) with all of %s" % (len(groups), shard_index, shard_count, args.instrument))
-    print("basic-pitch: %s  (%s)" % (binary, "GPU allowed" if args.use_gpu else "CPU only"))
-    print("-> %s/<track>/%s.mid  and  %s/<track>/%s_pianoroll.npy  (fps %d, threshold %g)"
-          % (midi_out_root, name, cache_root, name, args.fps, args.velocity_threshold))
 
     to_render, to_transcribe = [], []
     skipped = 0
@@ -155,86 +198,63 @@ def main():
             to_render.append((track, mid_path, roll_path))
         else:
             to_transcribe.append((track, stems, mid_path, roll_path))
+
+    print("%d tracks (shard %d/%d) with all of %s" % (len(groups), shard_index, shard_count, args.instrument))
+    print("-> %s/<track>/%s.mid  and  %s/<track>/%s_pianoroll.npy  (fps %d, threshold %g)"
+          % (midi_out_root, name, cache_root, name, args.fps, args.velocity_threshold))
     print("already cached %d, to render from a kept .mid %d, to transcribe %d"
-          % (skipped, len(to_render), len(to_transcribe)))
+          % (skipped, len(to_render), len(to_transcribe)), flush=True)
+
+    import pretty_midi
+    import torchaudio
 
     rendered = failed = 0
 
-    def render(track, mid_path, roll_path):
-        nonlocal rendered, failed
+    def save_roll(pm, track, roll_path):
+        nonlocal rendered
+        roll = render_roll(pm, args.fps, args.velocity_threshold)
+        roll_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(roll_path, roll)
+        rendered += 1
+        return roll
+
+    for track, mid_path, roll_path in to_render:
         try:
-            roll = render_roll(mid_path, args.fps, args.velocity_threshold)
-            roll_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(roll_path, roll)
-            rendered += 1
+            save_roll(pretty_midi.PrettyMIDI(str(mid_path)), track, roll_path)
         except Exception as e:
             failed += 1
             print("  FAILED render %s: %s" % (track, e))
 
-    for track, mid_path, roll_path in to_render:
-        render(track, mid_path, roll_path)
+    if to_transcribe:
+        transcribe = Transcriber()
+        print("basic-pitch (PyTorch port) on %s" % transcribe.device, flush=True)
 
     start = time.monotonic()
-    done = 0
-    batch_tag = "shard%d" % shard_index
-    for b in range(0, len(to_transcribe), args.batch_size):
-        batch = to_transcribe[b : b + args.batch_size]
-        batch_dir = work_dir / ("%s_batch%05d" % (batch_tag, b // args.batch_size))
-        audio_dir, out_dir = batch_dir / "audio", batch_dir / "midi"
-        if batch_dir.exists():
-            shutil.rmtree(batch_dir)
-        audio_dir.mkdir(parents=True)
-
-        import torchaudio
-
-        inputs = []
-        for track, stems, mid_path, roll_path in batch:
+    with tempfile.TemporaryDirectory(prefix="bp_mixture_") as tmp:
+        wav_path = Path(tmp) / "mixture.wav"
+        for n, (track, stems, mid_path, roll_path) in enumerate(to_transcribe, start=1):
             try:
                 mixture, rate = build_mixture(stems)
-                wav_path = audio_dir / ("%s__%s.wav" % (track, name))
                 torchaudio.save(str(wav_path), mixture, rate)
-                inputs.append((track, wav_path, mid_path, roll_path))
+                midi = transcribe(wav_path)
+                mid_path.parent.mkdir(parents=True, exist_ok=True)
+                midi.write(str(mid_path))
+                roll = save_roll(midi, track, roll_path)
+                if n <= 3:
+                    notes = sum(len(i.notes) for i in midi.instruments)
+                    active = int((roll.sum(axis=0) > 0).sum())
+                    print("  %s: %d notes, %d/%d frames sounding"
+                          % (track, notes, active, roll.shape[1]), flush=True)
             except Exception as e:
                 failed += 1
-                print("  FAILED mixing %s: %s" % (track, e))
+                print("  FAILED %s: %s: %s" % (track, type(e).__name__, e), flush=True)
 
-        if not inputs:
-            shutil.rmtree(batch_dir, ignore_errors=True)
-            done += len(batch)
-            continue
-
-        if args.retranscribe:
-            for _, _, mid_path, _ in inputs:
-                if mid_path.exists():
-                    mid_path.unlink()
-
-        proc = run_basic_pitch(out_dir, [w for _, w, _, _ in inputs],
-                               binary=binary, cpu_only=not args.use_gpu)
-
-        lost = []
-        for track, wav_path, mid_path, roll_path in inputs:
-            produced = expected_output(out_dir, wav_path)
-            if not produced.exists():
-                lost.append(track)
-                continue
-            mid_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(produced), str(mid_path))
-            render(track, mid_path, roll_path)
-        if lost:
-            failed += len(lost)
-            print("  basic-pitch produced no MIDI for %d of %d (exit %d), e.g. %s. Its output:"
-                  % (len(lost), len(inputs), proc.returncode, lost[0]))
-            print(output_tail(proc))
-        else:
-            # Kept on failure, so the mixtures can be looked at.
-            shutil.rmtree(batch_dir, ignore_errors=True)
-
-        done += len(batch)
-        minutes = (time.monotonic() - start) / 60
-        per_minute = done / minutes if minutes > 0 else 0.0
-        left = (len(to_transcribe) - done) / per_minute if per_minute > 0 else float("nan")
-        print("[%d/%d transcribed] %.1f min, %.1f tracks/min, ~%.0f min left"
-              % (done, len(to_transcribe), minutes, per_minute, left), flush=True)
+            if n % 100 == 0 or n == len(to_transcribe):
+                minutes = (time.monotonic() - start) / 60
+                per_minute = n / minutes if minutes > 0 else 0.0
+                left = (len(to_transcribe) - n) / per_minute if per_minute > 0 else float("nan")
+                print("[%d/%d transcribed] %.1f min, %.1f tracks/min, ~%.0f min left"
+                      % (n, len(to_transcribe), minutes, per_minute, left), flush=True)
 
     total = len(groups)
     covered = skipped + rendered

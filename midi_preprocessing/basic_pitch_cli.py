@@ -1,7 +1,9 @@
 """Run the official basic-pitch command-line tool, and say why when it fails.
 
-Shared by the cache builders in this directory. Two things it fixes that the
-original scripts got wrong:
+Used by the single-stem cache builders. Note that the official tool is NOT
+installed in venv_yuval on the server; create_mixture_bp_midi_cache.py uses the
+in-repo PyTorch port instead, which needs nothing installed. Two things this
+fixes that the single-stem scripts got wrong:
 
 The binary is looked up next to the Python that is running, not on PATH. Under
 nohup, without the venv activated, a bare "basic-pitch" resolves to nothing or
@@ -10,9 +12,7 @@ to a different install, and the failure looked identical to "produced no MIDI".
 The tool's own output is kept. It used to go to /dev/null, so every failure was
 reported as "No MIDI file created" with the reason thrown away.
 
-The official tool is used rather than the in-repo basic_pitch_torch port on
-purpose: the existing generated-MIDI caches came from it, and the port builds
-notes differently (and is fed 24 kHz audio where it expects 22.05 kHz).
+The existing single-stem generated caches came from this tool.
 """
 
 from __future__ import annotations
