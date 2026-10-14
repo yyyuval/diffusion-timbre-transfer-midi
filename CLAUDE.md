@@ -411,6 +411,7 @@ Three switches exist to answer this. All default to the normal path, so ordinary
 |---|---|
 | `use_midi=true` | **the master switch.** Off by default. When off, no MIDI parameters are built, nothing is loaded, nothing is passed — the model is byte-for-byte the upstream architecture |
 | `midi_cache_root=<path>` | which roll cache to read. Required when `use_midi=true`; a path that does not exist now raises at startup instead of silently serving zero rolls |
+| `midi_merged=true` | **polyphonic only.** One roll for the whole mixture, `[128, T]`, instead of one per stem stacked to `[256, T]` — the MIDI a score or a transcription actually gives you. Needs `mix_instruments` and `midi_bins=128`; `train.py` stops at startup if they disagree |
 | `midi_mode=multiscale\|single` | conditioning architecture. `multiscale` (default) injects at every resolution; `single` is the original one-shot injection, kept for comparison |
 | `midi_gate_init=<float>` | starting value for the gates. `0.0` (default) means the model begins identical to the unconditioned one |
 | `datamodule.dataset.midi_shuffle=true` | **control**: pair each clip with a roll from a *different* track. Same format, same density, wrong notes. The window is drawn from within that track's own length, so a short track does not come back mostly zeros — that would be the no-MIDI condition, not the wrong-MIDI one |
@@ -847,6 +848,10 @@ Nothing is hardcoded any more: a run reads whichever cache `midi_cache_root=` po
 | `midi_cache_bassoon_fps75_gt/` | 9,982 | dataset `stems_midi/` | `bassoon_gt_ms_85ep` |
 | `midi_cache_string_fps75_gt/` | 30,053 | dataset, violin + cello | `violin_cello_gt_ms_85ep` |
 | `midi_cache_wood_fps75_gt/` | 20,523 | dataset, flute + bassoon | `flute_bassoon_gt_ms_85ep` |
+| `midi_cache_wood_fps75_gt_merged/` | — | dataset, flute + bassoon, **merged** | `flute_bassoon_gtmerged_ms_85ep[_sigma100]` |
+| `midi_cache_string_fps75_gt_merged/` | — | dataset, violin + cello, **merged** | `violin_cello_gtmerged_ms_85ep[_sigma100]` |
+| `midi_cache_wood_fps75_bp_merged/` | — | **basic-pitch on the mixture** | `flute_bassoon_bpmerged_ms_85ep[_sigma100]` |
+| `midi_cache_string_fps75_bp_merged/` | — | **basic-pitch on the mixture** | `violin_cello_bpmerged_ms_85ep[_sigma100]` |
 | `midi_cache_cello_fps75/` | 11,395 | **basic-pitch** | the 40-epoch `bp` comparison |
 | `midi_cache_bassoon_fps75/` | 9,982 | **basic-pitch** | same |
 | `midi_cache_*_fps75_addfifth/` | — | +7 semitones added to the above | AddFifth-era runs only |
@@ -860,6 +865,28 @@ python midi_preprocessing/create_gt_midi_cache.py   --dataset_root $D --instrume
 ```
 
 Both mixture caches came back at **100% coverage, 0 missing**. Always read that line — a missing roll is not an error, it is a silent all-zero roll.
+
+### Merged MIDI — one roll for both instruments
+
+Every polyphonic MIDI model before 2026-10-14 was given one roll **per instrument**, stacked, so it knew which instrument plays which note. Nobody has that outside this dataset. The merged layout gives the model the union of the notes in a single `[128, T]` roll, from one of two sources:
+
+| Source | Built by | What it is |
+|---|---|---|
+| real | `midi_preprocessing/merge_midi.py` | the stems' ground-truth MIDI merged into one file. Same-pitch notes that overlap fuse into one; touching notes stay two |
+| generated | `midi_preprocessing/create_mixture_bp_midi_cache.py` | basic-pitch run on the **summed** audio, the way you would transcribe a recording |
+
+Both write `<track>/merged_<instruments>_pianoroll.npy`; the name comes from `merged_midi_name` in `wav_dataset.py` and nowhere else. Both keep the `.mid` beside it under `--midi_out_root`. `merge_midi.py` also checks every track: the merged roll must equal the element-wise OR of the stems' own rolls, and a track that fails is reported and **not** written. `merge_midi.py --inputs a.mid b.mid --out merged.mid` merges a single pair.
+
+Generated MIDI uses the official `basic-pitch` tool, not the in-repo port, so it is comparable with the earlier single-stem generated caches (threshold 40). It runs on CPU unless `--use_gpu`, because TensorFlow otherwise takes every visible GPU's memory from the training runs. It is resumable and takes `--shard i/n`.
+
+```bash
+python midi_preprocessing/merge_midi.py --dataset_root $D --instrument flute bassoon --cache_root midi_cache_wood_fps75_gt_merged --midi_out_root midi_gt_merged/wood
+python midi_preprocessing/create_mixture_bp_midi_cache.py --dataset_root $D --instrument flute bassoon --cache_root midi_cache_wood_fps75_bp_merged --midi_out_root midi_bp_merged/wood --shard 0/8
+```
+
+A training run adds `use_midi=true midi_merged=true midi_bins=128 midi_cache_root=<merged cache>` to the usual overrides. Run names: `<data>_{gtmerged,bpmerged}_ms_85ep[_sigma100]`. Four conditions are eight runs, because each bridge needs a flute+bassoon source and a violin+cello target trained the same way. Evaluating them needs new experiment entries with `MIDI_BINS=128`, not yet added.
+
+The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. All three now go through `midi_preprocessing/basic_pitch_cli.py`.
 
 ### Mixture latent stats (in `checkpoints/`)
 
