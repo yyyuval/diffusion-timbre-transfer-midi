@@ -88,6 +88,16 @@ def get_paired_stem_filenames(
     return groups
 
 
+def merged_midi_name(instruments: Sequence[str]) -> str:
+    """File stem of a track's merged roll and MIDI, e.g. merged_flute_bassoon.
+
+    Defined once and imported by the dataset and by both scripts that build
+    merged caches. A name that drifts between the writer and the reader is a
+    cache that misses on every lookup, and a miss is served as an all-zero roll.
+    """
+    return "merged_" + "_".join(inst.lower() for inst in instruments)
+
+
 class WAVDataset(Dataset):
     def __init__(
         self,
@@ -103,6 +113,7 @@ class WAVDataset(Dataset):
         midi_cache_root: Optional[str] = None,
         midi_shuffle: bool = False,
         mix_instruments: Optional[Sequence[str]] = None,
+        midi_merged: bool = False,
     ):
         self.paths = path if isinstance(path, (list, tuple)) else [path]
 
@@ -145,6 +156,20 @@ class WAVDataset(Dataset):
         # Same format, same density, wrong notes. If the gate still climbs under
         # this, gate movement is not evidence the model reads the notes.
         self.midi_shuffle = midi_shuffle
+        # One roll for the whole mixture instead of one per stem: the notes of
+        # every instrument in a single [128, T] roll, with nothing saying which
+        # instrument plays which. That is the MIDI a real score or a
+        # transcription of a recording gives you. Read from
+        # <midi_cache_root>/<track>/merged_<instruments>_pianoroll.npy, built by
+        # midi_preprocessing/merge_midi.py (ground truth) or
+        # create_mixture_bp_midi_cache.py (basic-pitch on the mixture).
+        if midi_merged and not self.mix_instruments:
+            raise ValueError(
+                "midi_merged=true needs mix_instruments: a merged roll is the "
+                "union of several instruments' notes, and a single instrument "
+                "has nothing to merge."
+            )
+        self.midi_merged = bool(midi_merged)
         assert (
             not random_crop_size or sample_rate
         ), "Optimized random crop requires sample_rate to be set."
@@ -257,6 +282,17 @@ class WAVDataset(Dataset):
             track_name,
             f"{file_name}_pianoroll.npy"
         )
+
+    def get_merged_midi_cache_path(self, group: Sequence[str]) -> str:
+        """The one roll that covers every stem of this track (midi_merged)."""
+        if self.midi_cache_root is None:
+            return self.get_midi_cache_path(group[0])  # raises the same message
+        track_name = os.path.basename(os.path.dirname(os.path.dirname(group[0])))
+        return os.path.join(
+            self.midi_cache_root,
+            track_name,
+            merged_midi_name(self.mix_instruments) + "_pianoroll.npy",
+        )
           
 
     def __getitem__(
@@ -343,15 +379,18 @@ class WAVDataset(Dataset):
 
             # One roll per stem. In mixture mode these are stacked along the
             # pitch axis below, so the model sees which instrument plays what
-            # rather than a merged "something is sounding" roll.
-            if self.mix_instruments:
-                midi_sources = self.groups[midi_idx]
+            # rather than a merged "something is sounding" roll -- unless
+            # midi_merged asks for exactly that, in which case there is one
+            # roll for the whole track and nothing is stacked.
+            if self.midi_merged:
+                midi_paths = [self.get_merged_midi_cache_path(self.groups[midi_idx])]
+            elif self.mix_instruments:
+                midi_paths = [self.get_midi_cache_path(s) for s in self.groups[midi_idx]]
             else:
-                midi_sources = [self.wavs[midi_idx]]
+                midi_paths = [self.get_midi_cache_path(self.wavs[midi_idx])]
 
             piano_rolls = []
-            for src in midi_sources:
-                midi_path = self.get_midi_cache_path(src)
+            for midi_path in midi_paths:
                 if os.path.exists(midi_path):
                     piano_rolls.append(np.load(midi_path).astype(np.float32))
                 else:
@@ -396,8 +435,9 @@ class WAVDataset(Dataset):
                     )
                 piano_rolls[i] = roll
 
-            # [128, T] for one instrument, [128*K, T] for a mixture -- stacked in
-            # mix_instruments order, so midi_bins must be 128*K in the model.
+            # [128, T] for one instrument or a merged mixture, [128*K, T] for a
+            # stacked mixture -- in mix_instruments order, so midi_bins must be
+            # 128*K in the model (train.py checks this before building it).
             piano_roll = (
                 piano_rolls[0]
                 if len(piano_rolls) == 1
