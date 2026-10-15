@@ -886,6 +886,8 @@ python midi_preprocessing/create_mixture_bp_midi_cache.py --dataset_root $D --in
 
 A training run adds `use_midi=true midi_merged=true midi_bins=128 midi_cache_root=<merged cache>` to the usual overrides. Run names: `<data>_{gtmerged,bpmerged}_ms_85ep[_sigma100]`. Four conditions are eight runs, because each bridge needs a flute+bassoon source and a violin+cello target trained the same way. Evaluating them needs new experiment entries with `MIDI_BINS=128`, not yet added.
 
+`train_merged_midi.sh` runs all eight on a fixed GPU allocation, one run per GPU (default: the 3 least-used at launch). It transcribes on the CPU in the background, starts a generated-MIDI run only once its cache holds as many rolls as the real one, and checks a GPU still has room before each launch. A finished run gets `train_logs/<tag>.done`, so re-running the script skips it. Past runs of this size took 6.1–7.0 hours each (W&B `_runtime`), so three GPUs finish the eight in about three waves.
+
 The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. Both now go through `midi_preprocessing/basic_pitch_cli.py` — which still needs the official tool, not installed in `venv_yuval`.
 
 ### Mixture latent stats (in `checkpoints/`)
