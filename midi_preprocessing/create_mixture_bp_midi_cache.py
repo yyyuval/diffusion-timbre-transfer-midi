@@ -66,14 +66,23 @@ class Transcriber:
     """The port's predict(), with the model loaded once instead of per call."""
 
     def __init__(self):
+        import scipy.signal
         import torch
         from basic_pitch_torch.model import BasicPitchTorch
+
+        # The port's note_creation.py comes from an older basic-pitch and calls
+        # scipy.signal.gaussian, which SciPy 1.13 removed. The same function
+        # lives on as scipy.signal.windows.gaussian. Restored here rather than
+        # by editing the port, which is not under version control.
+        if not hasattr(scipy.signal, "gaussian"):
+            scipy.signal.gaussian = scipy.signal.windows.gaussian
 
         if not WEIGHTS.exists():
             sys.exit("basic-pitch weights not found at %s" % WEIGHTS)
         self.torch = torch
         self.model = BasicPitchTorch()
-        self.model.load_state_dict(torch.load(str(WEIGHTS), map_location="cpu"))
+        self.model.load_state_dict(
+            torch.load(str(WEIGHTS), map_location="cpu", weights_only=True))
         self.model.eval()
         # run_inference moves the audio to cuda whenever cuda is available, so
         # the model has to follow the same rule or the two end up apart.
@@ -230,6 +239,7 @@ def main():
         print("basic-pitch (PyTorch port) on %s" % transcribe.device, flush=True)
 
     start = time.monotonic()
+    transcription_failures = 0
     with tempfile.TemporaryDirectory(prefix="bp_mixture_") as tmp:
         wav_path = Path(tmp) / "mixture.wav"
         for n, (track, stems, mid_path, roll_path) in enumerate(to_transcribe, start=1):
@@ -247,7 +257,14 @@ def main():
                           % (track, notes, active, roll.shape[1]), flush=True)
             except Exception as e:
                 failed += 1
+                transcription_failures += 1
                 print("  FAILED %s: %s: %s" % (track, type(e).__name__, e), flush=True)
+                # Every track failing from the start is a bug, not bad audio.
+                # Each attempt still pays for inference, so without this a
+                # systematic error grinds through thousands of tracks for hours.
+                if transcription_failures == n and n >= 5:
+                    sys.exit("The first %d tracks all failed -- stopping. Fix the error "
+                             "above and run the same command again." % n)
 
             if n % 100 == 0 or n == len(to_transcribe):
                 minutes = (time.monotonic() - start) / 60
