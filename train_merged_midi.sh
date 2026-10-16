@@ -31,7 +31,9 @@ ROOT="$(pwd)"
 PY="${PY:-venv_yuval/bin/python}"
 N_GPUS="${N_GPUS:-3}"
 POLL="${POLL:-60}"
-MAX_USED_MIB="${MAX_USED_MIB:-16000}"   # a run needs ~12 GB of the 32
+# W&B shows these runs peak at ~31 GiB of the 32: a run needs the card to
+# itself, so only start on one that is essentially empty.
+MAX_USED_MIB="${MAX_USED_MIB:-1000}"
 DATASET="${DATASET:-/dsi/gannot-lab/gannot-lab1/datasets/Yuval_Shlomi_2026_Music_Proj/cocochorales_tiny_v1_zipped/main_dataset}"
 LOGS="train_logs"
 mkdir -p "$LOGS"
