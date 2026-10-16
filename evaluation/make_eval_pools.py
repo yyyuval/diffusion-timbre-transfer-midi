@@ -155,6 +155,15 @@ def main():
             for arch in architectures])
         write(out_dir / ("reference_%s.txt" % case), reference)
 
+        # One reference per architecture as well: real target audio THAT
+        # architecture's target model held out. Larger than the shared one
+        # (~1,800 vs ~360), which is what a 512-D CLAP covariance needs; each
+        # condition is then scored against its own, and the distance between
+        # the two references measures what that choice costs.
+        for arch in architectures:
+            write(out_dir / ("reference_%s_%s.txt" % (case, arch)),
+                  splits["%s_%s" % (datasets["target"], arch)]["VALIDATION"])
+
         print("%-10s %-8s %9s %9s %9s %9d" % (case, "shared", "", "", "", len(shared)))
         print("%-10s %-8s %9s %9s %9s %9d" % (case, "reference", "", "", "", len(reference)))
         print("-" * 60)

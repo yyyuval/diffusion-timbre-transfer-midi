@@ -79,6 +79,11 @@ def parse_args():
     p.add_argument("--exclude-track-lists", nargs="*",
                    default=[CASES["poly"]["track_list"], CASES["mono"]["track_list"]])
     p.add_argument("--experiments", nargs="*", default=None)
+    p.add_argument("--reference-name", default="reference",
+                   help="directory under fad/<case>/ for the reference clips, and the "
+                        "stem of its track list and embedding cache. A second name gives "
+                        "a second reference beside the first -- e.g. one per architecture, "
+                        "each held out by that architecture's target model only")
     p.add_argument("--out-csv", default=None, help="default: <out-root>/fad/clap_fad_200.csv")
     p.add_argument("--device", default=None)
     return p.parse_args()
@@ -141,7 +146,7 @@ def build_reference(case_name, ref_dir, dataset_root, n_ref, seed, exclude,
     case = CASES[case_name]
     stems = case["reference_stems"]
     ref_dir.mkdir(parents=True, exist_ok=True)
-    list_path = ref_dir.parent / "reference_tracks.txt"
+    list_path = ref_dir.parent / ("%s_tracks.txt" % ref_dir.name)
     if list_path.is_file():
         tracks = read_track_list(list_path)
         print("  reference list was frozen earlier: %s (%d clips)" % (list_path, len(tracks)))
@@ -234,17 +239,18 @@ def main():
             print("no %s rows in %s -- skipped" % (case_name, bridge_csv))
             continue
         fad_dir = out_root / "fad" / case_name
-        ref_dir = fad_dir / "reference"
+        ref_dir = fad_dir / args.reference_name
         print("=" * 70)
         print("  %s: reference = real %s" % (case_name, CASES[case_name]["reference_ensemble"]))
         print("=" * 70, flush=True)
         build_reference(case_name, ref_dir, args.dataset_root, args.n_ref, args.seed,
                         exclude, args.reference_from, args.pad_reference_to)
-        ref_emb = cached_embeddings(ref_dir, fad_dir / "reference_clap.npz", model, processor, device)
+        ref_emb = cached_embeddings(ref_dir, fad_dir / ("%s_clap.npz" % args.reference_name),
+                                    model, processor, device)
 
         mid = ref_emb.shape[0] // 2
         results.append({
-            "case": case_name, "experiment": "sanity_reference_halves", "pair": "",
+            "case": case_name, "experiment": "sanity_%s_halves" % args.reference_name, "pair": "",
             "use_midi": "", "trained_sigma": "", "sigma_handoff": "",
             "reference": str(ref_dir), "n_reference": mid, "n_generated": ref_emb.shape[0] - mid,
             "clap_fad": frechet_distance(ref_emb[:mid], ref_emb[mid:]),

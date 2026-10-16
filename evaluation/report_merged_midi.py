@@ -144,11 +144,22 @@ def load(out_root: Path):
 
 
 def fad_tables(out_root: Path):
-    enc = {r["experiment"]: r for r in read(out_root / "fad" / "encodec_fad_results.csv")
+    """EnCodec-FAD, CLAP-FAD, and -- when run_merged_clap.sh has run -- CLAP-FAD
+    against each architecture's own 1,000-clip reference, with the floor."""
+    fad = out_root / "fad"
+    enc = {r["experiment"]: r for r in read(fad / "encodec_fad_results.csv")
            if r.get("case") == "poly"}
-    clap = {r["experiment"]: r for r in read(out_root / "fad" / "clap_fad_200.csv")
+    clap = {r["experiment"]: r for r in read(fad / "clap_fad_200.csv")
             if r.get("case") == "poly"}
-    return enc, clap
+    own = {}
+    for name in ("clap_fad_stacked_ref.csv", "clap_fad_merged_ref.csv"):
+        own.update({r["experiment"]: r for r in read(fad / name)
+                    if r.get("case") == "poly" and not r["experiment"].startswith("sanity")})
+    floor_rows = read(fad / "clap_reference_floor.csv")
+    floor = floor_rows[0] if floor_rows else None
+    if own:   # the full-rank numbers replace the singular ones
+        clap = dict(clap, **own)
+    return enc, clap, bool(own), floor
 
 
 def content_ids(per):
@@ -209,6 +220,7 @@ def condition_summary(per, ids, enc, clap, ceil):
             jd=mean(d.get("jd") for d in c.values()),
             encodec_fad=num(enc.get(e, {}).get("fad")),
             clap_fad=num(clap.get(e, {}).get("clap_fad")),
+            clap_n_reference=num(clap.get(e, {}).get("n_reference")),
             n_generated=num(enc.get(e, {}).get("n_generated")),
             n_classified=len(clf),
             target_ok=mean(float(d["target_ok"]) for d in clf),
@@ -219,7 +231,8 @@ def condition_summary(per, ids, enc, clap, ceil):
     return rows
 
 
-def write_report(args, per, ids, summary, enc, clap, ceil, n_ceil, stats, listen_info):
+def write_report(args, per, ids, summary, enc, clap, ceil, n_ceil, stats, listen_info,
+                 clap_own=False, clap_floor=None):
     L = []
     L.append("# Merged-MIDI test — results\n")
     L.append("Generated %s from `%s` by `evaluation/report_merged_midi.py`.\n"
@@ -288,14 +301,32 @@ def write_report(args, per, ids, summary, enc, clap, ceil, n_ceil, stats, listen
 
     L.append("## Timbre\n")
     L.append("EnCodec-FAD: distance to real violin + cello, lower is better — the paper's metric, "
-             "and sound at these sample sizes (128-D). CLAP-FAD is 512-D against a reference of a "
-             "few hundred clips, so its covariance is singular: read it as a ranking at most.\n")
+             "and sound at these sample sizes (128-D). All conditions share one reference: real "
+             "violin + cello that both target models held out.\n")
+    if clap_own:
+        floor_txt = ("not measured" if not clap_floor else
+                     "**%.4f** (%s and %s clips, %s in both)"
+                     % (num(clap_floor["clap_fad"]), clap_floor["n_stacked_reference"],
+                        clap_floor["n_merged_reference"], clap_floor["clips_in_both"]))
+        L.append("CLAP-FAD is 512-D, and the shared reference is too small for it. So each "
+                 "architecture is scored against its **own** reference of up to 1,000 real violin + "
+                 "cello clips its own target model never saw. The two references are samples of "
+                 "the same population; the CLAP-FAD between them is the noise that choice adds: "
+                 "%s. A difference between stacked and merged well above that is real; within one "
+                 "architecture the reference is identical, so those differences are exact.\n"
+                 % floor_txt)
+    else:
+        L.append("CLAP-FAD is 512-D against the shared reference of a few hundred clips, so its "
+                 "covariance is singular: read it as a ranking at most. Run "
+                 "`evaluation/run_merged_clap.sh` to score each architecture against its own "
+                 "1,000-clip reference instead.\n")
     sane_enc = [r for k, r in enc.items() if k.startswith("sanity")]
     sane_clap = [r for k, r in clap.items() if k.startswith("sanity")]
     L.append(md_table(
-        ["condition", "n generated", "EnCodec-FAD", "CLAP-FAD", "target found", "exact set",
+        ["condition", "n generated", "EnCodec-FAD", "CLAP-FAD (n ref)", "target found", "exact set",
          "p(violin, cello)", "p(flute, bassoon)"],
-        [[f"`{e}`", fmt(s["n_generated"], "%.0f"), fmt(s["encodec_fad"]), fmt(s["clap_fad"], "%.4f"),
+        [[f"`{e}`", fmt(s["n_generated"], "%.0f"), fmt(s["encodec_fad"]),
+          "%s (%s)" % (fmt(s["clap_fad"], "%.4f"), fmt(s["clap_n_reference"], "%.0f")),
           fmt(s["target_ok"]), fmt(s["target_exact"]), fmt(s["p_target"]), fmt(s["p_source"])]
          for e, s in summary.items()]
         + [["*real vs real*", "", fmt(num(sane_enc[0]["fad"])) if sane_enc else "–",
@@ -438,7 +469,7 @@ def main():
     if not ids:
         raise SystemExit("no clip has content scores under every condition in %s -- has the "
                          "content stage run?" % out_root)
-    enc, clap = fad_tables(out_root)
+    enc, clap, clap_own, clap_floor = fad_tables(out_root)
     ceil, n_ceil = ceiling(args.ceiling_csv)
     summary = condition_summary(per, ids, enc, clap, ceil)
     stats = []
@@ -451,7 +482,8 @@ def main():
     if not args.no_listen:
         listen_info = build_listening(out_root, per, ids, summary, args.clip)
 
-    report = write_report(args, per, ids, summary, enc, clap, ceil, n_ceil, stats, listen_info)
+    report = write_report(args, per, ids, summary, enc, clap, ceil, n_ceil, stats, listen_info,
+                          clap_own, clap_floor)
     table = write_csv(out_root, summary)
 
     print("%d paired test clips, ceiling %s" % (len(ids), fmt(ceil)))
