@@ -140,7 +140,7 @@ def track_list_for(args, cfg):
     }[case_name]
     if not args.track_list_dir or not isinstance(cfg, dict):
         return fallback
-    arch = "midi" if cfg["use_midi"] else "nomidi"
+    arch = cfg.get("arch") or ("midi" if cfg["use_midi"] else "nomidi")
     rel = os.path.join(args.track_list_dir, "track_list_%s_%s.txt" % (case_name, arch))
     if os.path.isfile(rel) or os.path.isfile(os.path.join(args.repo_path, rel)):
         return rel
@@ -248,6 +248,11 @@ class Bridge:
         self.pair = pair
         self.case = CASES[cfg["case"]]
         self.use_midi = cfg["use_midi"]
+        # A merged pair reads one 128-row roll for the whole mixture, so its
+        # bins are its own, not the case's stacked 128 x instruments.
+        self.midi_bins = cfg.get("midi_bins", self.case["midi_bins"])
+        self.midi_cache = cfg.get("midi_cache")
+        self.midi_instruments = cfg.get("midi_instruments")
         self.trained_sigma = cfg["trained_sigma"]
         self.source_ckpt, self.target_ckpt = source_ckpt, target_ckpt
         self.device = device
@@ -262,7 +267,7 @@ class Bridge:
                 diffusion_sigma_distribution=sigma_distribution,
                 use_midi=self.use_midi,
                 midi_mode=MIDI_MODE,
-                midi_bins=self.case["midi_bins"],
+                midi_bins=self.midi_bins,
             )
             model = Model(model=diffusion, mean_path=mean_path, std_path=std_path,
                           use_midi=self.use_midi)
@@ -284,12 +289,32 @@ class Bridge:
         midi = None
         if self.use_midi:
             target_frames = int(round(CLIP_LENGTH / SAMPLING_RATE * MIDI_FPS))
+            if self.midi_cache:
+                roll_paths = [[self.merged_roll_path(t)] for t in tracks]
+            else:
+                roll_paths = [self.rtt.derive_midi_paths(p) for p in paths]
             midi = torch.cat([
-                self.rtt.load_piano_roll(self.rtt.derive_midi_paths(p), target_frames,
-                                         MIDI_FPS, self.case["midi_bins"], self.device)
-                for p in paths
+                self.rtt.load_piano_roll(rp, target_frames, MIDI_FPS, self.midi_bins, self.device)
+                for rp in roll_paths
             ], dim=0)
         return x, midi, paths
+
+    def merged_roll_path(self, track):
+        """The input track's merged roll, from the cache its models trained on.
+
+        The input is cropped from the start of the track and load_piano_roll
+        crops the roll from frame 0, so both describe the same 17 s. Relative to
+        the repo, which run_jobs has already made the working directory.
+        """
+        from audio_data_pytorch.datasets.wav_dataset import merged_midi_name
+
+        path = os.path.abspath(os.path.join(
+            self.midi_cache, track, merged_midi_name(self.midi_instruments) + "_pianoroll.npy"))
+        if not os.path.isfile(path):
+            # A missing roll in training was an all-zero roll; here it would be
+            # a silent wrong answer for one clip. Refuse instead.
+            raise FileNotFoundError("no merged roll for %s at %s" % (track, path))
+        return path
 
     def encode(self, x):
         return split_on_oom(
@@ -444,7 +469,7 @@ def run_jobs(args, jobs):
                         "num_steps": NUM_STEPS,
                         "use_midi": cfg["use_midi"],
                         "midi_mode": MIDI_MODE if cfg["use_midi"] else "",
-                        "midi_bins": case["midi_bins"] if cfg["use_midi"] else "",
+                        "midi_bins": bridge.midi_bins if cfg["use_midi"] else "",
                         "trained_sigma": cfg["trained_sigma"],
                         "sigma_handoff": h,
                         "source_ckpt": source_ckpt,

@@ -155,6 +155,33 @@ MODEL_PAIRS = {
     ),
 }
 
+# One MIDI roll for both instruments instead of one per stem: what a score or a
+# transcription of a recording actually gives you. These pairs carry their own
+# midi_bins (128, not the case's 256) and read the input track's roll from the
+# same cache their models trained on -- midi_cache/<track>/merged_<instruments>
+# _pianoroll.npy -- so the conditioning at test time is built exactly as in
+# training. "real" is the dataset's MIDI merged; "generated" is basic-pitch run
+# on the summed mixture. arch="merged" gives them their own held-out clips: the
+# merged models landed on a different train/validation split from the stacked
+# ones, because their parameter count differs.
+for _name, _src, _sigma, _cache in [
+    ("merged_real_midi", "gtmerged", 5, "midi_cache_wood_fps75_gt_merged"),
+    ("merged_real_midi_s100", "gtmerged", 100, "midi_cache_wood_fps75_gt_merged"),
+    ("merged_generated_midi", "bpmerged", 5, "midi_cache_wood_fps75_bp_merged"),
+    ("merged_generated_midi_s100", "bpmerged", 100, "midi_cache_wood_fps75_bp_merged"),
+]:
+    _suffix = "_sigma100" if _sigma == 100 else ""
+    MODEL_PAIRS[_name] = dict(
+        case="poly", use_midi=True, trained_sigma=_sigma, arch="merged",
+        midi_bins=128, midi_cache=_cache, midi_instruments=["flute", "bassoon"],
+        source_ckpt="run:flute_bassoon_%s_ms_85ep%s" % (_src, _suffix),
+        target_ckpt="run:violin_cello_%s_ms_85ep%s" % (_src, _suffix),
+    )
+del _name, _src, _sigma, _cache, _suffix
+
+MERGED_PAIRS = ["merged_real_midi", "merged_real_midi_s100",
+                "merged_generated_midi", "merged_generated_midi_s100"]
+
 DEFAULT_PAIRS = [
     "original_midi_s100", "no_midi_s100",
     "mono_c2b_original_midi_s100", "mono_c2b_no_midi_s100",

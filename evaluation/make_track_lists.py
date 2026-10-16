@@ -73,6 +73,8 @@ def parse_args():
     p.add_argument("--out-dir", default=str(ROOT / "evaluation"))
     p.add_argument("--skip-midi-check", action="store_true",
                    help="only check that the files exist, do not parse the MIDI")
+    p.add_argument("--architectures", nargs="+", default=ARCHITECTURES,
+                   help="which pool_<case>_<arch>.txt to build lists from, e.g. midi merged")
     return p.parse_args()
 
 
@@ -150,7 +152,7 @@ def pooled_lists(args, out_dir):
             print("      the paired content metrics will run on %d clips, not %d."
                   % (len(shared), args.n_content))
 
-        for arch in ARCHITECTURES:
+        for arch in args.architectures:
             pool_path = pool_dir / ("pool_%s_%s.txt" % (case_name, arch))
             accept, rejected = make_accept(args.dataset_root, case["stems"],
                                            not args.skip_midi_check)

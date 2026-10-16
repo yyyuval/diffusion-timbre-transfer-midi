@@ -50,7 +50,19 @@ CONFIGS = [
     ("violin_cello_nomidi", "violin_cello_nomidi_85ep"),
     ("flute_bassoon_midi",  "flute_bassoon_gt_ms_85ep"),
     ("flute_bassoon_nomidi","flute_bassoon_nomidi_85ep"),
+    # Merged MIDI (one 128-row roll): a third parameter count, so a third split.
+    # The real- and generated-MIDI runs differ only in which cache they read,
+    # which consumes no RNG, so they must land on the same split -- the
+    # _bp columns are there to check that, not to be used.
+    ("flute_bassoon_merged",    "flute_bassoon_gtmerged_ms_85ep"),
+    ("violin_cello_merged",     "violin_cello_gtmerged_ms_85ep"),
+    ("flute_bassoon_merged_bp", "flute_bassoon_bpmerged_ms_85ep"),
+    ("violin_cello_merged_bp",  "violin_cello_bpmerged_ms_85ep"),
 ]
+
+# Pairs that must come out identical; checked whenever both were dumped.
+TWINS = [("flute_bassoon_merged", "flute_bassoon_merged_bp"),
+         ("violin_cello_merged", "violin_cello_merged_bp")]
 
 
 def overrides_of(run_dir):
@@ -158,6 +170,13 @@ def main():
         print("%-22s %9d %9d %9d" % (n, total, len(val), len(train)))
     print("\nwrote %s  (%d validation rows, then %d training rows)"
           % (args.out, max_val, max_train))
+
+    for a, b in TWINS:
+        if a in results and b in results:
+            same = (set(results[a][0]) == set(results[b][0])
+                    and set(results[a][1]) == set(results[b][1]))
+            print("%s vs %s: %s" % (a, b, "identical split, as expected" if same else
+                  "*** DIFFERENT SPLITS -- the generated-MIDI runs need their own pools"))
 
     # ---- what this was for ---------------------------------------------------
     # A recording held out by BOTH architectures was trained on by neither, so it

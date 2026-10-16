@@ -70,11 +70,14 @@ ARCHITECTURES = ["midi", "nomidi"]
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--splits", default="tools/splits.csv",
-                   help="the table dump_splits.py wrote")
+    p.add_argument("--splits", nargs="+", default=["tools/splits.csv"],
+                   help="the table(s) dump_splits.py wrote; columns are merged")
     p.add_argument("--out-dir", default="tools/pools")
     p.add_argument("--cases", nargs="+", default=list(CASE_DATASETS),
                    choices=list(CASE_DATASETS))
+    p.add_argument("--architectures", nargs="+", default=ARCHITECTURES,
+                   help="column suffixes to pool over, e.g. midi merged. The shared "
+                        "list and the reference are held out by EVERY one named")
     return p.parse_args()
 
 
@@ -106,13 +109,16 @@ def write(path, tracks):
 
 def main():
     args = parse_args()
-    splits = read_splits(args.splits)
+    splits = {}
+    for path in args.splits:
+        splits.update(read_splits(path))
+    architectures = args.architectures
     out_dir = Path(args.out_dir)
 
     missing = []
     for case in args.cases:
         for role in ("source", "target"):
-            for arch in ARCHITECTURES:
+            for arch in architectures:
                 col = "%s_%s" % (CASE_DATASETS[case][role], arch)
                 if col not in splits:
                     missing.append(col)
@@ -128,7 +134,7 @@ def main():
     for case in args.cases:
         datasets = CASE_DATASETS[case]
         pools = {}
-        for arch in ARCHITECTURES:
+        for arch in architectures:
             source_val = splits["%s_%s" % (datasets["source"], arch)]["VALIDATION"]
             target_train = splits["%s_%s" % (datasets["target"], arch)]["TRAINING"]
             # Only tracks carrying both instruments can collide; in CocoChorales
@@ -146,7 +152,7 @@ def main():
         # The FAD reference: real target audio neither target model trained on.
         reference = set.intersection(*[
             splits["%s_%s" % (datasets["target"], arch)]["VALIDATION"]
-            for arch in ARCHITECTURES])
+            for arch in architectures])
         write(out_dir / ("reference_%s.txt" % case), reference)
 
         print("%-10s %-8s %9s %9s %9s %9d" % (case, "shared", "", "", "", len(shared)))
