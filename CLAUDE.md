@@ -2,12 +2,15 @@
 
 This file gives Claude (or any new assistant / teammate) the full context needed to work inside this repository and dataset environment. It is intentionally detailed so that a fresh conversation can pick up exactly where the last one left off, with no loss of context.
 
-> **Status (2026-10-06):**
+> **Status (2026-10-18):**
+> - **Merged MIDI (one roll for both instruments): trained and tested.** Eight runs, 2026-10-15. Merging costs note F1 −0.025 (σ 5) and −0.039 (σ 100) against stacked MIDI, yet stays far above no MIDI. Generated (basic-pitch) merged MIDI costs another −0.027 / −0.047 and has the worst FAD of any MIDI model from handoff 20 up. See *Merged MIDI → Results* below.
+> - **Handoff sweep done, 2026-10-18.** Every σmax=100 model at handoff 5, 20, 50, 100. With real MIDI, **handoff 20 is the best operating point**. See *The handoff sweep* below.
+> - **Results PDFs** (built on the Windows machine, not in git): `Results_Summary_All_85ep_Models.pdf` (one page) and `Results_Summary_With_Handoff_Sweep.pdf` (three pages) in the Windows project folder; their generator is `report_generators/make_report_3pages.py` beside them.
 > - **Phase 1 — AddFifth polyphony augmentation: DONE.** Cello and bassoon each trained 100 epochs with the fifth added.
 > - **Phase 2 — MIDI conditioning: the answer flipped at high noise.** At `sigma_max=5` conditioning buys ~1%, inside measurement noise. At `sigma_max=100` it buys **~12%**, far outside it. See *sigma_max and MIDI* below — this is the project's main result so far.
 > - **Phase 3 — two-instrument training: DONE.** Eight pair models, four per sigma.
 > - **Phase 4 — evaluation: Yuval owns it.** Brief at [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). The pipeline lives in `evaluation/` and `evaluation_mono/`.
-> - **Four single-instrument no-MIDI runs launched 2026-10-06** — the last gap in the matrix.
+> - **The 85-epoch matrix is complete**, including the four single-instrument no-MIDI runs (bassoon 0.530 / 0.613, cello 0.588 / 0.670 valid loss at σ 5 / 100).
 
 > ⚠️ Any MIDI-conditioned checkpoint from before **2026-09-06** trained on misaligned conditioning (Bug 10) and should be discarded.
 
@@ -888,7 +891,52 @@ A training run adds `use_midi=true midi_merged=true midi_bins=128 midi_cache_roo
 
 `train_merged_midi.sh` runs all eight on a fixed GPU allocation, one run per GPU (default: the 3 least-used at launch). It transcribes on the CPU in the background, starts a generated-MIDI run only once its cache holds as many rolls as the real one, and checks a GPU still has room before each launch. A finished run gets `train_logs/<tag>.done`, so re-running the script skips it. Past runs of this size took 6.1–7.0 hours each (W&B `_runtime`), so three GPUs finish the eight in about three waves.
 
+#### Results (2026-10-17, test set B)
+
+Set B: 200 clips held out by the stacked AND the merged models (paired content metrics), up to 1,000 per model for FAD. `Outputs/WAV_files/merged_midi_test/{REPORT.md,results.csv,listen/}`. Note F1 ceiling = basic-pitch on real violin + cello, 0.779.
+
+| condition | σmax | note F1 | % of ceiling | EnCodec-FAD |
+|---|---|---|---|---|
+| stacked, real | 5 | 0.649 | 83% | 4.28 |
+| merged, real | 5 | 0.624 | 80% | 4.53 |
+| merged, generated | 5 | 0.597 | 77% | 3.82 |
+| stacked, real | 100 | 0.539 | 69% | 2.94 |
+| merged, real | 100 | 0.500 | 64% | 3.69 |
+| merged, generated | 100 | 0.453 | 58% | 6.13 |
+
+Paired note-F1 differences (5,000-resample bootstrap, all intervals exclude zero): merged − stacked −0.025 [−0.032, −0.018] at σ 5 and −0.039 [−0.048, −0.030] at σ 100; generated − real merged −0.027 and −0.047. For context, no MIDI on set A: 67% (σ 5) and 34% (σ 100) of ceiling — so even generated merged MIDI keeps most of the MIDI benefit. `valid_loss` barely moves (flute+bassoon σ 5: 0.586 stacked, 0.587 merged real, 0.588 merged generated) and says nothing about melody. Likely cause of the generated-MIDI timbre gap, unproven: the target model trained on basic-pitch transcriptions of violin + cello but is given transcriptions of flute + bassoon, whose errors differ (flute draws octave errors).
+
 The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. Both now go through `midi_preprocessing/basic_pitch_cli.py` — which still needs the official tool, not installed in `venv_yuval`.
+
+### The handoff sweep (2026-10-18)
+
+The handoff is the noise level at which the source model hands the clip to the target model: low keeps more of the input (melody), high gives the target more room (timbre). It changes no weights, so every σmax=100 model was simply sampled at 5, 20, 50 and 100 (`run_bridge_batched.py --jobs <pair>:5,20,50`), as in the paper's Table III. `evaluation/run_handoff_sweep.sh` runs it on the same clips and in the same result folders as the summary table (so handoff 100 is the existing row); `evaluation/collect_handoff_sweep.py` prints one row per (set, model, handoff) into `Outputs/handoff_sweep_results.csv`.
+
+Note F1 as % of ceiling / EnCodec-FAD:
+
+| model (set) | h 5 | h 20 | h 50 | h 100 |
+|---|---|---|---|---|
+| poly no MIDI (A) | 64% / 5.39 | 38% / 9.92 | 34% / 12.76 | 34% / 13.29 |
+| poly stacked real (A) | 77% / 5.55 | 70% / 2.95 | 68% / 2.91 | 68% / 2.93 |
+| poly merged real (B) | 76% / 5.30 | 66% / 3.37 | 65% / 3.59 | 64% / 3.69 |
+| poly merged generated (B) | 72% / 5.07 | 61% / 5.01 | 59% / 5.83 | 58% / 6.13 |
+| mono no MIDI (A) | 62% / 3.84 | 27% / 4.14 | 23% / 4.71 | 23% / 4.56 |
+| mono MIDI real (A) | 82% / 4.89 | 78% / 4.45 | 78% / 4.79 | 77% / 5.15 |
+
+What it shows: lowering the handoff saves the melody of the no-MIDI models (poly 34% → 64%) but barely moves the MIDI models, which hold it anyway. Handoff 5 costs timbre (FAD 5.1–6.1 for every poly model). With real MIDI, **handoff 20** matches or beats 100 on both axes, and MIDI at 20 beats no MIDI at any handoff. Generated merged MIDI sits apart on FAD from handoff 20 up.
+
+### Metric decisions for polyphony
+
+- **DPD, JD and target found are not reported for two instruments.** DPD and JD keep one note per moment (argmax), so the second instrument is invisible. Target found comes from the instrument classifier (`evaluation/train_timbre_classifier.py`: 128→64→13 on mean-pooled EnCodec, trained on ~2,000 real tracks — every stem plus one random same-track pair in half the tracks, all evaluation and reference tracks excluded; held-out macro-F1 0.910, exact set 0.868). A violin + cello pair is rare in its training mixtures and it confuses cello with double bass, so "both target instruments heard" is not reliable. It stays for mono (bassoon heard in ≥92% of clips). Whether p(source) from the same classifier should go too is open.
+- **Note F1 as % of ceiling** divides by basic-pitch on real target audio: 0.779 violin + cello (175 clips), 0.780 bassoon — not the source instrument (cello is 0.936, which understated mono by a fifth).
+- **CLAP-FAD** has a reference of ~280–310 clips against 512 dimensions: singular, a ranking at most. `evaluation/run_merged_clap.sh` scores each architecture against its own 1,000-clip reference and measures the floor between the two references; not yet run.
+
+### Server notes from the October runs
+
+- **Group write on `Outputs/`.** Files Yuval created were `rw-r--r--`; a merge into her `clap_validation_1000/bridge_metrics_all.csv` failed with PermissionError (silenced at the time) and 12,000 freshly generated clips looked missing. Yuval ran `chmod -R g+w Outputs` on 2026-10-18; directories are setgid `dsi`, so new files stay shared. `clap_validation_1000/bridge_metrics_all.chenyuv_backup.csv` is her original merged CSV of 2026-10-08 and can be deleted. That folder was generated by her on 2026-10-08, which is why the 2026-10-10 run "generated" 8,000 clips in minutes — it found them done.
+- **Real generation rate: ~14 clips per minute per V100** (two models × 100 steps), with the GPU at 83–98%. A shared GPU is about a third slower. Plan with this, not with the 2026-10-10 run.
+- **Training needs a whole GPU:** W&B shows the 85-epoch pair runs peaking at ~31 GiB of 32. `train_merged_midi.sh` starts a run only on a GPU with < 1,000 MiB in use. The team's allocation is three GPUs.
+- **Log timestamps on the server are UTC**, not local time.
 
 ### Mixture latent stats (in `checkpoints/`)
 
