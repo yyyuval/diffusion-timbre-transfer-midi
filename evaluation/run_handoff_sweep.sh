@@ -113,7 +113,11 @@ if have 1; then
     done
     for p in "${pids[@]}"; do wait "$p"; done
     for root in "$A_CONTENT" "$A_TIMBRE" "$B_ROOT"; do
-      "$PYTHON" evaluation/run_bridge_batched.py --out-root "$root" --merge > /dev/null 2>&1
+      # Not silenced: a merge that cannot write -- bridge_metrics_all.csv owned
+      # by another user -- leaves the old file in place, and every clip just
+      # generated then looks missing.
+      "$PYTHON" evaluation/run_bridge_batched.py --out-root "$root" --merge > "$LOGDIR/merge_$STAMP.log" 2>&1 \
+        || die "merging $root failed (clips are safe in $root/csv/): $(tail -n 1 "$LOGDIR/merge_$STAMP.log")"
     done
     missing="$(expected_rows "$A_TIMBRE" 1000 $(sweep_exps "${POLY_A[@]}" "${MONO_A[@]}"))"
     missing+=" $(expected_rows "$B_ROOT" 1000 $(sweep_exps "${POLY_B[@]}"))"
