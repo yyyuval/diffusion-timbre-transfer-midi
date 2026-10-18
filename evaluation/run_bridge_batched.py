@@ -137,7 +137,7 @@ def track_list_for(args, cfg):
         "poly": args.track_list_poly,
         "mono": args.track_list_mono,
         "mono_b2c": args.track_list_mono_b2c,
-    }[case_name]
+    }.get(case_name) or CASES[case_name]["track_list"]
     if not args.track_list_dir or not isinstance(cfg, dict):
         return fallback
     arch = cfg.get("arch") or ("midi" if cfg["use_midi"] else "nomidi")

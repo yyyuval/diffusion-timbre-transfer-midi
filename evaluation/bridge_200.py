@@ -84,6 +84,43 @@ CASES = {
         track_list="evaluation_mono/track_list_20_mono.txt",
         reference_script="Run_timbre_transfer_mono.py",
     ),
+    # Identity: the target ensemble in and out, through the same pipeline -- the
+    # instruments do not change, so whatever an instrument probe calls the output
+    # is what the pipeline's own artifacts do to it (evaluation/identity_probe.py).
+    # The inputs are the real clips of the FAD reference: held out by these models,
+    # and already embedded, so each clip is compared before and after.
+    "poly_identity": dict(
+        family="string",
+        source="violin_cello",
+        target="violin_cello",
+        stems=["1_violin.wav", "4_cello.wav"],
+        midi_bins=256,
+        source_mean="checkpoints/violin_cello_mean.pt",
+        source_std="checkpoints/violin_cello_std.pt",
+        target_mean="checkpoints/violin_cello_mean.pt",
+        target_std="checkpoints/violin_cello_std.pt",
+        reference_family="string",
+        reference_stems=["1_violin.wav", "4_cello.wav"],
+        reference_ensemble="violin_cello",
+        track_list="Outputs/WAV_files/clap_validation_1000/fad/poly/reference_tracks.txt",
+        reference_script=None,
+    ),
+    "mono_identity": dict(
+        family="woodwind",
+        source="bassoon",
+        target="bassoon",
+        stems=["4_bassoon.wav"],
+        midi_bins=128,
+        source_mean="checkpoints/mean_tensor_enc_bassoon.pt",
+        source_std="checkpoints/std_tensor_enc_bassoon.pt",
+        target_mean="checkpoints/mean_tensor_enc_bassoon.pt",
+        target_std="checkpoints/std_tensor_enc_bassoon.pt",
+        reference_family="woodwind",
+        reference_stems=["4_bassoon.wav"],
+        reference_ensemble="bassoon",
+        track_list="Outputs/WAV_files/clap_validation_1000/fad/mono/reference_tracks.txt",
+        reference_script=None,
+    ),
 }
 
 # Checkpoint specs are either a path relative to the repo, or "run:<dir>",
@@ -178,6 +215,19 @@ for _name, _src, _sigma, _cache in [
         target_ckpt="run:violin_cello_%s_ms_85ep%s" % (_src, _suffix),
     )
 del _name, _src, _sigma, _cache, _suffix
+
+# The same weights on both sides: the target models of original_midi_s100 and
+# mono_c2b_original_midi_s100, fed the target ensemble's own audio and MIDI.
+MODEL_PAIRS["identity_vc_midi_s100"] = dict(
+    case="poly_identity", use_midi=True, trained_sigma=100,
+    source_ckpt=MODEL_PAIRS["original_midi_s100"]["target_ckpt"],
+    target_ckpt=MODEL_PAIRS["original_midi_s100"]["target_ckpt"],
+)
+MODEL_PAIRS["identity_bsn_midi_s100"] = dict(
+    case="mono_identity", use_midi=True, trained_sigma=100,
+    source_ckpt="run:bassoon_gt_ms_85ep_sigma100",
+    target_ckpt="run:bassoon_gt_ms_85ep_sigma100",
+)
 
 MERGED_PAIRS = ["merged_real_midi", "merged_real_midi_s100",
                 "merged_generated_midi", "merged_generated_midi_s100"]
