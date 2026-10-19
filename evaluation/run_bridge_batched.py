@@ -69,6 +69,24 @@ from evaluation.bridge_200 import (  # noqa: E402
 )
 
 
+def parse_shard(spec):
+    try:
+        i, n = (int(v) for v in spec.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("--shard wants I/N, e.g. 0/3, got %r" % spec)
+    if not 0 <= i < n:
+        raise argparse.ArgumentTypeError("--shard %s: need 0 <= I < N" % spec)
+    return i, n
+
+
+def shard_csv(out_root, experiment, shard):
+    """A shard's own CSV, so shards never append to the same file."""
+    path = condition_csv(out_root, experiment)
+    if shard is None:
+        return path
+    return path.with_name("%s__shard%dof%d.csv" % (path.stem, shard[0], shard[1]))
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--gpu", default=None,
@@ -83,6 +101,10 @@ def parse_args():
                    help="explicit pair:h1,h2 specs; overrides --pairs/--handoffs/--baseline")
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--n", type=int, default=None, help="only the first N tracks of each list")
+    p.add_argument("--shard", type=parse_shard, default=None, metavar="I/N",
+                   help="take tracks I, I+N, I+2N, ... of each list (after --n), so N "
+                        "processes on N GPUs split one job. Each shard writes its own "
+                        "per-experiment CSV; --merge combines them.")
     p.add_argument("--track-list-dir", default=None,
                    help="prefer <dir>/track_list_<case>_<midi|nomidi>.txt, the "
                         "per-architecture lists make_track_lists.py --pool-dir "
@@ -405,14 +427,20 @@ def run_jobs(args, jobs):
         from audio_diffusion_pytorch import PitchTracker
         tracker = PitchTracker()
 
+    shard = getattr(args, "shard", None)
     for pair, handoffs in jobs:
         cfg = MODEL_PAIRS[pair]
         case = CASES[cfg["case"]]
         tracks = read_track_list(track_list_for(args, cfg))
         if args.n is not None:
             tracks = tracks[:args.n]
+        if shard is not None:
+            tracks = tracks[shard[0]::shard[1]]
         exps = {h: experiment_name(pair, cfg["trained_sigma"], h) for h in handoffs}
-        done = {h: read_done(condition_csv(args.out_root, exps[h])) for h in handoffs}
+        # A clip counts as done whether an unsharded run or this shard wrote it.
+        done = {h: read_done(condition_csv(args.out_root, exps[h]))
+                   | read_done(shard_csv(args.out_root, exps[h], shard))
+                for h in handoffs}
         todo = [t for t in tracks if any((exps[h], t) not in done[h] for h in handoffs)]
 
         print("\n" + "=" * 70)
@@ -454,7 +482,7 @@ def run_jobs(args, jobs):
                     if tracker is not None:
                         dpd, jd = pitch_metrics(tracker, input_waveform, target_waveform_np,
                                                 case["source"], case["target"])
-                    append_row(condition_csv(args.out_root, exps[h]), {
+                    append_row(shard_csv(args.out_root, exps[h], shard), {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "experiment": exps[h],
                         "pair": pair,

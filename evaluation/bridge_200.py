@@ -216,6 +216,19 @@ for _name, _src, _sigma, _cache in [
     )
 del _name, _src, _sigma, _cache, _suffix
 
+# Roll swap: the same weights, fed the OTHER kind of merged roll at test time.
+# merged_generated_midi_s100 has the worst EnCodec-FAD of any MIDI model (6.13
+# against 3.69 for real rolls). If the FAD follows the roll, the roll is the
+# cause; if it follows the weights, training on generated rolls is. Same arch,
+# so the same held-out clips as the two pairs they are built from.
+SWAP_PAIRS = {
+    "swap_realtrained_genroll_s100": ("merged_real_midi_s100", "midi_cache_wood_fps75_bp_merged"),
+    "swap_gentrained_realroll_s100": ("merged_generated_midi_s100", "midi_cache_wood_fps75_gt_merged"),
+}
+for _name, (_base, _cache) in SWAP_PAIRS.items():
+    MODEL_PAIRS[_name] = dict(MODEL_PAIRS[_base], midi_cache=_cache)
+del _name, _base, _cache
+
 # The same weights on both sides: the target models of original_midi_s100 and
 # mono_c2b_original_midi_s100, fed the target ensemble's own audio and MIDI.
 MODEL_PAIRS["identity_vc_midi_s100"] = dict(

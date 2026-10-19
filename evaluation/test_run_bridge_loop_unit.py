@@ -28,6 +28,7 @@ class FakeBridge:
     def __init__(self, pair, source_ckpt, target_ckpt, device, rtt):
         FakeBridge.loads.append(pair)
         self.case = b.CASES[b.MODEL_PAIRS[pair]["case"]]
+        self.midi_bins = b.MODEL_PAIRS[pair].get("midi_bins", self.case["midi_bins"])
 
     def prepare(self, tracks, dataset_root):
         x = torch.stack([torch.full((1, 4), float(int(t[-3:]))) for t in tracks])
@@ -72,6 +73,7 @@ def setup(tmp_path, monkeypatch):
         track_list_poly="evaluation/track_list_200_poly.txt",
         track_list_mono="evaluation/track_list_200_mono.txt",
         track_list_mono_b2c="evaluation_mono/track_list_20_mono.txt",
+        track_list_dir=None,
     )
     return args, tracks, saved
 
@@ -119,6 +121,36 @@ def test_resume_skips_done_clips_per_handoff(setup, monkeypatch):
     FakeBridge.loads.clear()
     r.run_jobs(args, [("original_midi_s100", [25.0, 100.0])])
     assert FakeBridge.loads == [], "nothing left to do, so the models must not be loaded"
+
+
+def test_shards_split_tracks_and_merge_back(setup, monkeypatch):
+    args, tracks, saved = setup
+    monkeypatch.chdir(args.repo_path)
+    out = Path(args.repo_path) / "out"
+    for i in range(3):
+        args.shard = (i, 3)
+        r.run_jobs(args, [("original_midi_s100", [100.0])])
+        own = rows_of(r.shard_csv(out, "original_midi_s100", (i, 3)))
+        assert [x["sample_id"] for x in own] == tracks[i::3]
+        assert {x["experiment"] for x in own} == {"original_midi_s100"}
+    assert sorted(i for _, ids in FakeBridge.transfers for i in ids) == [float(i) for i in range(1, 8)]
+    assert not b.condition_csv(out, "original_midi_s100").exists()
+
+    FakeBridge.loads.clear()
+    for i in range(3):
+        args.shard = (i, 3)
+        r.run_jobs(args, [("original_midi_s100", [100.0])])
+    assert FakeBridge.loads == [], "every shard is done, so nothing may be reloaded"
+
+    merged = rows_of(b.merge_csvs(out))
+    assert sorted(x["sample_id"] for x in merged) == tracks
+
+
+def test_parse_shard():
+    assert r.parse_shard("2/3") == (2, 3)
+    for bad in ("3/3", "-1/3", "1", "a/b"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            r.parse_shard(bad)
 
 
 def test_split_on_oom_halves_and_reassembles():
