@@ -2,10 +2,15 @@
 
 This file gives Claude (or any new assistant / teammate) the full context needed to work inside this repository and dataset environment. It is intentionally detailed so that a fresh conversation can pick up exactly where the last one left off, with no loss of context.
 
-> **Status (2026-10-18):**
+> **Status (2026-10-19):**
 > - **Merged MIDI (one roll for both instruments): trained and tested.** Eight runs, 2026-10-15. Merging costs note F1 −0.025 (σ 5) and −0.039 (σ 100) against stacked MIDI, yet stays far above no MIDI. Generated (basic-pitch) merged MIDI costs another −0.027 / −0.047 and has the worst FAD of any MIDI model from handoff 20 up. See *Merged MIDI → Results* below.
 > - **Handoff sweep done, 2026-10-18.** Every σmax=100 model at handoff 5, 20, 50, 100. With real MIDI, **handoff 20 is the best operating point**. See *The handoff sweep* below.
 > - **Results PDFs** (built on the Windows machine, not in git): `Results_Summary_All_85ep_Models.pdf` (one page) and `Results_Summary_With_Handoff_Sweep.pdf` (three pages) in the Windows project folder; their generator is `report_generators/make_report_3pages.py` beside them.
+> - **Why EnCodec-FAD and CLAP-FAD disagree: investigated 2026-10-18/19.** Both are stable and the disagreement is real. CLAP reacts mostly to the pipeline's artifacts; EnCodec is robust to them but can miss leftover source instruments. EnCodec-FAD is the primary timbre metric (it is the paper's); CLAP is left out of the project book. A blind listening test is built and waiting for Shlomo's answers. See *Why the two FADs disagree* below.
+> - **Roll swap, 2026-10-19: code pushed, run pending.** Why does generated merged MIDI have the worst FAD (6.13 against 3.69)? Each σmax=100 merged bridge runs with the other kind of roll, plus a roll-error comparison and a false-note diagnosis. See *The roll swap* below. Shlomo may put it in the book.
+> - **Project book written, 2026-10-19** (Windows only, not in git): `project_book/` beside this repo, English LaTeX, 38 pages, compiled on Overleaf. See *Project book* near the end.
+> - **Evaluation data selection: DONE and pushed** (`43ad350`). `evaluation/make_eval_pools.py` derives the three candidate pools from `tools/splits.csv`; see *Evaluation* below and `docs/METRICS_HANDOFF.md` §3l.
+> - **Inference on audio from outside the dataset: code written, NOT yet committed.** See *Running on audio from outside the dataset* below.
 > - **Phase 1 — AddFifth polyphony augmentation: DONE.** Cello and bassoon each trained 100 epochs with the fifth added.
 > - **Phase 2 — MIDI conditioning: the answer flipped at high noise.** At `sigma_max=5` conditioning buys ~1%, inside measurement noise. At `sigma_max=100` it buys **~12%**, far outside it. See *sigma_max and MIDI* below — this is the project's main result so far.
 > - **Phase 3 — two-instrument training: DONE.** Eight pair models, four per sigma.
@@ -690,6 +695,71 @@ Both halves of the bridge are conditioned. `USE_MIDI` is set automatically from 
 INPUT_AUDIO_PATH = [".../stems_audio/1_flute.wav", ".../stems_audio/4_bassoon.wav"]
 ```
 
+### Running on audio from outside the dataset
+
+Real recordings, DAW bounces, anything `torchaudio` can open. Four environment
+variables, added 2026-10-08:
+
+| Variable | Meaning |
+|---|---|
+| `INPUT_AUDIO` | overrides `INPUT_AUDIO_PATH` entirely. Several stems separated by `\|`. **Quote it** — real filenames contain spaces, and `:`/`;` can legitimately appear in a path, which is why `\|` is the separator |
+| `CLIP_OFFSET_SEC` | which 17.07 s window to take out of a longer file. Appended to `SAMPLE_ID`, so windows do not overwrite each other |
+| `INPUT_PEAK` | rescale the summed input to this peak. Off by default |
+| `SAMPLE_ID` | override the id; otherwise derived from the filenames |
+| `MIDI_PATH` | now also readable from the environment |
+
+```bash
+INPUT_AUDIO="real_audio/flute.wav|real_audio/bassoon.wav" EXPERIMENT_NAME=no_midi_s100 METRICS_ROOT=Outputs/WAV_files/real venv_yuval/bin/python Run_timbre_transfer.py
+```
+
+Both `Run_timbre_transfer.py` and `Run_timbre_transfer_mono.py` take the same variables.
+
+**Only the no-MIDI experiments can run on outside audio.** There is no
+ground-truth roll beside it, and the MIDI models are built with conditioning
+parameters then loaded `strict=True`, so they cannot run unconditioned. The
+script now fails immediately with that explanation instead of 300 lines later
+on a `stems_midi/` path that does not exist. Transcribing with basic-pitch and
+passing it via `MIDI_PATH` is a *different* experiment — those models trained
+on perfect ground truth — and worth doing on purpose, not as a substitute.
+
+#### Two traps this fixed
+
+**Stereo was read as a batch dimension.** EnCodec 24 kHz is mono and every
+dataset stem is mono, so nothing downstream expects a channel axis. A stereo
+file arrived as `[1, 2, N]`, the `2` was taken as batch, and the script ran two
+independent bridges on L and R, saving the pair as a stereo file. It sounded
+almost right, which is the dangerous kind of wrong. Stems are now averaged to
+mono before resampling.
+
+**Everything past the first 17.07 s was silently discarded.** The crop took
+`[:CLIP_LENGTH]` with no way to reach the rest. `CLIP_OFFSET_SEC` now selects
+the window, and the script prints how much audio it left unused and the offset
+for the next window.
+
+#### Level is not cosmetic
+
+EnCodec is not level-invariant, and on top of that the models standardise
+latents with a mean/std pair computed over CocoChorales stems. A real recording
+often peaks around 0.1, roughly 20 dB below a dataset stem, which lands in a
+region of latent space the model saw little of — the bridge then degrades for a
+reason unrelated to timbre. The script prints peak and RMS, warns below 0.3,
+and `INPUT_PEAK=0.95` tests the hypothesis. Default behaviour is unchanged so
+existing dataset results stay reproducible.
+
+#### What is runnable with solo + pair models
+
+flute+bassoon → violin+cello on `no_midi` and `no_midi_s100`. Solo cello and
+bassoon in either direction. **No solo models exist for violin or flute**, so
+those two can only be used inside the pair. The reverse pair direction
+(violin+cello → flute+bassoon) needs the two checkpoints swapped and is not
+wired up.
+
+Expect outside audio to score worse than the dataset, and treat that as
+informative. CocoChorales is synthesised from sampled instruments with no room
+and clean note boundaries; a real recording has a room, breath, bow noise and
+vibrato. It is a genuine out-of-distribution test — a good qualitative demo and
+a bad source of numbers.
+
 ⚠️ **`ADD_FIFTH` belongs to the Phase-1 checkpoints only.** Those were trained with the synthetic fifth; every 85-epoch model was not. Set it `True` only for `cello_add_fifth_*` / `bassoon_add_fifth_*`.
 
 ### Things baked into the script
@@ -766,13 +836,17 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 16. ~~Watch the deep gates~~ ✅ Answered, and the question was wrong. Gates shrank at sigma=100 while the benefit grew 12x — gate magnitude is a bad proxy. Use `train/midi_rel_magnitude`.
 17. ~~Compare `valid_loss`, pair-with-MIDI vs pair-without~~ ✅ 0.8-1.0% at sigma=5 (noise), 11-12% at sigma=100 (real).
 18. ~~Train at `sigma_max=100`~~ ✅ Six runs, 2026-10-06. The main result.
-19. **Finish the matrix** — four single-instrument no-MIDI runs launched 2026-10-06, ~10 hours. Then eight bridges are evaluable.
-20. **Build the new metrics** — Yuval, per [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md). `mir_eval.transcription` (polyphonic, 50 ms onset tolerance) against ground-truth MIDI as the primary number, `mir_eval.multipitch` alongside it so the gap between them measures timing drift, the paper's instrument classifier generalised to multi-label, FAD on EnCodec, and the per-instrument transcription ceiling.
-21. **Run the bridges and measure DPD / FAD** across the eight conditions. Loss is not the project's metric; this is.
-22. **Sweep `SIGMA_HANDOFF`** — `Run_timbre_transfer.py` now separates the sigma the weights were trained at from the sigma the two models meet at, so a `sigma_max=100` model can be sampled at 50, 20 or 5 with no retraining. The paper's Table III shows this is the melody-vs-timbre dial and nothing in this project has ever varied it.
-23. **Listen.** Still not done.
+19. ~~Finish the matrix~~ ✅ All 24 networks trained, including the merged-MIDI eight (2026-10-15).
+20. ~~Build the new metrics~~ ✅ Yuval, per [`docs/METRICS_HANDOFF.md`](docs/METRICS_HANDOFF.md): note F1 with `mir_eval`, frame F1, the instrument classifier, EnCodec-FAD, the transcription ceiling.
+21. ~~Run the bridges and measure~~ ✅ Test sets A and B, see *Evaluation*.
+22. ~~Sweep `SIGMA_HANDOFF`~~ ✅ 2026-10-18. Handoff 20 is the best operating point with real MIDI.
+23. **Listen.** Both listening packages are built (see *Why the two FADs disagree*); waiting for Shlomo's answers. Add the result to the project book (sections 6.5 and 8).
 24. Housekeeping: add `pretty_midi` + `basic-pitch` + `mir_eval` to `requirements.txt`; refresh the stale `hydra-core==1.2.0` pin; name the remaining cache dirs in `.gitignore`; delete `midi_outputs/cache_temp_midis*`; `scripts_chenyuv_old/` and `debug_midi_chenyuv_old/` were checked and hold nothing worth keeping.
-25. **Two branches are diverged.** `fix/midi-alignment-and-cache-cleanup` and `hybrid-timbre-interpolation` each carry commits the other lacks. Consolidate onto one. To move a single file across without touching history: `git checkout <branch> -- <path>` — it only adds files and cannot conflict.
+25. ~~Two branches are diverged~~ ✅ Consolidated onto `fix/midi-alignment-and-cache-cleanup` (2026-10-08). Only deleting the stale `hybrid-timbre-interpolation` remains; check it for unpushed commits first.
+26. **Identity-floor FAD** — the FAD of the identity outputs (`Outputs/WAV_files/identity_test`) against the reference: the best score this pipeline can reach, for both embeddings. Not run.
+27. **Frame-level EnCodec-FAD with fadtk**, to make our numbers comparable with the paper's Table I. Not run.
+28. **Correct the stale CLAP line** ("a ranking at most") in the results PDFs and in the docstrings of `compute_clap_fad_200.py`.
+29. **Roll swap.** Code pushed 2026-10-19, run pending on GPUs 5, 6, 7 (see *The roll swap*). When `REPORT.md` exists, fill in the result there. If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
 
 ---
 
@@ -799,12 +873,12 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 
 **The paired design is the good part.** Each track is run under both conditions and the difference taken *within* the track, which cancels the track-to-track spread — an order of magnitude larger than the effect. That is what makes n=20 usable for DPD at all; on synthetic data with a realistic spread it resolves ~0.02 DPD. **n=20 is not enough for FAD**, which fits a 512-dimensional distribution; that needs ~200.
 
-### What is missing
+### What was missing (both now exist)
 
-The paper (§III-E) reports four metrics; we have two.
+The paper (§III-E) reports four metrics; at first we had two.
 
-- **Instrument classifier accuracy** — absent. In the paper's Table I this is what exposed that the GFB baseline had failed completely: excellent DPD, **0%** timbre accuracy. DPD alone cannot see that failure.
-- **FAD on EnCodec** — we compute FAD on CLAP instead. Both are legitimate; the numbers are on different scales and must never be compared to each other or to the paper's table.
+- **Instrument classifier accuracy** — now `evaluation/train_timbre_classifier.py`, see *Metric decisions for polyphony*. In the paper's Table I this is what exposed that the GFB baseline had failed completely: excellent DPD, **0%** timbre accuracy. DPD alone cannot see that failure.
+- **FAD on EnCodec** — now `evaluation/compute_encodec_fad.py`, the primary FAD. CLAP-FAD is computed too. The two are on different scales and must never be compared to each other or to the paper's table.
 
 ### ⚠️ DPD and JD cannot score a mixture
 
@@ -923,13 +997,67 @@ Note F1 as % of ceiling / EnCodec-FAD:
 | mono no MIDI (A) | 62% / 3.84 | 27% / 4.14 | 23% / 4.71 | 23% / 4.56 |
 | mono MIDI real (A) | 82% / 4.89 | 78% / 4.45 | 78% / 4.79 | 77% / 5.15 |
 
-What it shows: lowering the handoff saves the melody of the no-MIDI models (poly 34% → 64%) but barely moves the MIDI models, which hold it anyway. Handoff 5 costs timbre (FAD 5.1–6.1 for every poly model). With real MIDI, **handoff 20** matches or beats 100 on both axes, and MIDI at 20 beats no MIDI at any handoff. Generated merged MIDI sits apart on FAD from handoff 20 up.
+What it shows: lowering the handoff saves the melody of the no-MIDI models (poly 34% → 64%) but barely moves the MIDI models, which hold it anyway. Handoff 5 costs timbre (FAD 5.1–6.1 for every poly model). With real MIDI, **handoff 20** matches or beats 100 on both axes. For **two instruments**, stacked MIDI at 20 beats no MIDI at any handoff on both axes (70% / 2.95 against at best 64% / 5.39). **Not for one instrument:** no MIDI at handoff 5 has the better FAD (3.84 against 4.45), and only the melody favours MIDI. Generated merged MIDI sits apart on FAD from handoff 20 up.
+
+### The roll swap (2026-10-19)
+
+**Question.** Generated merged MIDI at σmax=100 has EnCodec-FAD 6.13, against 3.69 with the real merged roll. Is the cause the generated *roll* at test time, or the *weights* trained on generated rolls? The candidate mechanism: the target model learned from basic-pitch transcriptions of violin + cello but is given transcriptions of flute + bassoon, and at high noise it follows the roll.
+
+**Design.** Two new pairs in `evaluation/bridge_200.py` (`SWAP_PAIRS`). Each one reuses an existing σmax=100 merged bridge and points it at the other cache:
+- `swap_realtrained_genroll_s100`: the `gtmerged` models, given `midi_cache_wood_fps75_bp_merged`.
+- `swap_gentrained_realroll_s100`: the `bpmerged` models, given `midi_cache_wood_fps75_gt_merged`.
+
+Both run at handoff 100 on the same 1,000 set-B inputs as the originals, because all merged models share one split. Their EnCodec-FAD is therefore directly comparable with 6.13 and 3.69.
+
+**Reading.**
+- If the FAD follows the roll, the swaps trade places with the originals.
+- If it follows the weights, each swap stays near its own models.
+
+**Also measured:**
+- `evaluation/compare_rolls.py` (CPU): how wrong the generated roll is against the real one, cell by cell, over the first 1280 frames. It does this for the flute + bassoon test inputs and for 1,000 violin + cello tracks, splitting the extra cells into octave, harmonic, neighbour and other. If basic-pitch errs differently on the two ensembles, that supports the training-versus-use mismatch.
+- `diagnose_false_notes.py` on the 200 content clips of all four conditions: what kind of extra notes the outputs have.
+- Note counts (estimated against reference notes), from the content CSVs.
+
+**Run (dgx01).** The run is detachable and resumable. Its runtime is about 50 min of generation on three GPUs, then about 15 min of metrics:
+```
+GPUS="5 6 7" setsid nohup bash evaluation/run_roll_swap.sh > Outputs/roll_swap.log 2>&1 < /dev/null &
+```
+- **Sharding:** `run_bridge_batched.py --shard I/N` (new) splits each job's tracks across the GPUs. Each shard writes `csv/<exp>__shardIofN.csv`, and `--merge` combines them.
+- **CPU jobs:** basic-pitch runs on the CPU. The roll comparison and the originals' transcriptions therefore run during generation, capped at 8 threads each.
+- **Output:** `Outputs/WAV_files/merged_midi_test/roll_swap/REPORT.md` and `results.csv`, written by `evaluation/report_roll_swap.py`.
+- **FAD check:** the report recomputes the FAD of the two originals from the cached embeddings and refuses to continue if they do not reproduce 3.69 and 6.13.
+- **FAD spread:** the report gives the book's ±, 50 joint resamples. It also gives P(A < B) with the same draws for all four conditions.
+
+**Result:** pending.
 
 ### Metric decisions for polyphony
 
 - **DPD, JD and target found are not reported for two instruments.** DPD and JD keep one note per moment (argmax), so the second instrument is invisible. Target found comes from the instrument classifier (`evaluation/train_timbre_classifier.py`: 128→64→13 on mean-pooled EnCodec, trained on ~2,000 real tracks — every stem plus one random same-track pair in half the tracks, all evaluation and reference tracks excluded; held-out macro-F1 0.910, exact set 0.868). A violin + cello pair is rare in its training mixtures and it confuses cello with double bass, so "both target instruments heard" is not reliable. It stays for mono (bassoon heard in ≥92% of clips). Whether p(source) from the same classifier should go too is open.
 - **Note F1 as % of ceiling** divides by basic-pitch on real target audio: 0.779 violin + cello (175 clips), 0.780 bassoon — not the source instrument (cello is 0.936, which understated mono by a fifth).
-- **CLAP-FAD** has a reference of ~280–310 clips against 512 dimensions: singular, a ranking at most. `evaluation/run_merged_clap.sh` scores each architecture against its own 1,000-clip reference and measures the floor between the two references; not yet run.
+- **CLAP-FAD** has a reference of ~280–310 clips against 512 dimensions, so its covariance is singular. That does **not** make it a ranking at most, as this file, the results PDFs and the docstrings of `compute_clap_fad_200.py` used to say: `diagnose_fad.py` refuted it (next section). `evaluation/run_merged_clap.sh` scores each architecture against its own 1,000-clip reference and measures the floor between the two references; not yet run.
+- **EnCodec-FAD** (`compute_encodec_fad.py`) is the Fréchet distance between clip means of the raw 128-D EnCodec latent. The paper used fadtk, which fits it on frames, so our values are on a different scale from its Table I and must not be compared with it.
+
+### Why the two FADs disagree (2026-10-18/19)
+
+In some comparisons EnCodec-FAD and CLAP-FAD prefer opposite models. Each hypothesis below was written into its script before the numbers were seen. All scripts read the embeddings the FADs cached unless noted; all are pushed.
+
+| script (commit) | question | answer |
+|---|---|---|
+| `diagnose_fad.py` (0cc9745) | Does CLAP's singular covariance flip rankings? | **No.** The null-space part is 0.5–1.2% of each CLAP-FAD. In all 56 pairs the two metrics order differently, CLAP keeps its order under Ledoit-Wolf, PCA 16–128 and references of 64–256 clips; 34 of the 56 are robust in both metrics. Resampling sd: CLAP ±0.002–0.004, EnCodec ±0.08–0.58, so some EnCodec gaps in the report are noise (stacked vs merged real σ 5 on set B; stacked h50 vs h100). CLAP embeds a random 10 s of each clip (`rand_trunc`), 20% of its between-clip spread |
+| `clap_text_probe.py` (d0df545) | Does CLAP-FAD track cleanliness rather than instruments? | **No.** In the robust disagreeing pairs CLAP's pick is the more target-like set in 30 of 34 and the cleaner one in 19 of 34. Every model reads 0.38–0.80 on a noisy-recording scale (0 = real, 1 = real made to sound old) |
+| `register_check.py` (ee84468) | Do inputs and reference play in different registers? | **No**, within 0.1 semitone |
+| `clap_multiple_choice.py` (bd77d4b) | Which of 91 instrument answers does CLAP's text side pick? | **Check failed.** It knows strings from winds, not cello or bassoon (real bassoon → "trombone + saxophone"), so the text probe's target axis is really strings vs winds |
+| `embedding_instrument_probe.py` (e46d3c9) | Which embedding's audio side tells the 13 instruments apart? | **A tie:** linear probe, track-split 5-fold, EnCodec 99.1%, CLAP 99.0%, music CLAP 96.4%. CLAP's audio side does know cello and bassoon |
+| `probe_generated.py` (7260506) | Do the two probes agree on what the outputs sound like? | **No.** EnCodec calls every mono output 100% bassoon and hears ~no flute + bassoon in poly; CLAP calls mono 36–74% bassoon (the rest mostly flute) and hears flute + bassoon in poly, most at handoff 5 |
+| `identity_probe.py` (ea32270) | Is that CLAP hearing leftover source, or pipeline noise? | **Mostly noise.** Target in and target out through the same pipeline (`identity_vc_midi_s100`, `identity_bsn_midi_s100`, 150 reference clips, `Outputs/WAV_files/identity_test`): CLAP's bassoon recognition falls from 99% to 8–11%, EnCodec's stays at 99%. Share of CLAP's non-target calls the noise alone reproduces: mono 1.4–1.6, poly handoff 100 0.51, poly handoff 5 0.13, so at handoff 5 CLAP hears real flute + bassoon leftovers that EnCodec's probe misses |
+
+**Reading.** CLAP responds mostly to the pipeline's artifacts, which every output has; EnCodec is robust to them but can miss residual source at low handoff, and it may favour audio made in its own latent space. EnCodec-FAD leads because it is the paper's metric, not because it agrees with our hypothesis; both are reported with their ± where CLAP is used at all. The project book leaves CLAP out at Shlomo's request.
+
+**Listening, pending Shlomo:**
+- `make_listening_test.py` (24b2f41) → `Outputs/listening_test/listening_test.zip`, with the key in `Outputs/listening_test/key.csv` outside it. 42 blind trials: three disagreeing comparisons × 12 and a control × 6. With 12 trials, 10 or more for one side is p < 0.05. Score with `score_listening_test.py Outputs/listening_test/answers/*.csv`.
+- `make_identity_listen.py` (42d2f01) → `Outputs/identity_listen.zip`: clips before and after the identity pipeline, at handoff 100 and 5, plus a few real transfers. Not level-matched on purpose.
+
+Shlomo reported that most outputs, especially two-to-two, sound "like an old recording"; the noisy-recording scale above agrees.
 
 ### Server notes from the October runs
 
@@ -976,6 +1104,29 @@ rm -rf midi_cache_cello midi_cache_test     # stale 50 fps + scratch
 
 ### Environments
 `venv_yuval/` is the documented env. `miniforge3/` is a separate conda install in the workspace (both gitignored). If a MIDI script and training disagree about a package version, check which interpreter is actually on `PATH` — always invoke the venv's python by full path.
+
+---
+
+## 📘 Project book (Windows only, not in git)
+
+`C:\Users\lenovo\Desktop\diffusion-timbre-transfer\project_book\` — the undergraduate project book, written 2026-10-19 from scratch (not from Yuval's draft). Title: *Polyphonic Timbre Transfer with MIDI-Conditioned Latent Diffusion Bridges*. English, 38 pages: 6 front matter and 32 numbered, 37 references, 8 figures, 11 tables.
+
+- **Layout:** `main.tex`, one file per chapter in `chapters/`, `refs.bib`, and a `README.md` that lists where every number came from (the evaluation outputs on the server).
+- **Figures** are pre-compiled PDFs in `figures/pdf/`, because Overleaf's free plan timed out compiling TikZ. The TikZ sources stay in `figures/*.tex`. After editing one, rebuild it with `python figures/build_figures.py <name> --tex <tectonic>`.
+- **Compiling locally:** there is no TeX install on Windows. Use Tectonic (`tectonic -X compile main.tex`, about 4 s).
+- **Overleaf:** the project is "Diffusion Timbre Transfer - Final Project" on the free plan. It needs `main.tex`, `refs.bib`, `chapters/` and `figures/pdf/`, with `pdf` *inside* `figures`. Git sync with Overleaf is a premium feature, so after every change say exactly which files to re-upload.
+- **Spectrogram figure (`fig:timbre`, 2026-10-19):** cello and bassoon, first 5 s, from the dataset stems `WAV/real_cello.wav` and `WAV/real_bassoon.wav` (16 kHz). It is built by `figures/make_spectrograms.py` into `figures/pdf/spectrograms.pdf` (matplotlib, not TikZ). Shlomo moved the timbre explanation into §2.1 and edits the text himself.
+- **Shlomo's rules for it:**
+  - **No mention of CLAP anywhere.**
+  - No padding: write nothing rather than fill.
+  - Every number must be traceable to a server output.
+  - **He edits the book himself.** Give him proposed LaTeX and file:line locations, never edit chapter files directly.
+  - **Wording:**
+    - Plain words: "generated from the audio", not "transcribed".
+    - "Separate roll for each instrument", not "stacked".
+    - No "transcription baseline".
+    - "Timbre" or "melody", never "sound".
+  - **Abstract:** no numbers and no metric names.
 
 ---
 
