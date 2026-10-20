@@ -7,7 +7,7 @@ This file gives Claude (or any new assistant / teammate) the full context needed
 > - **Handoff sweep done, 2026-10-18.** Every σmax=100 model at handoff 5, 20, 50, 100. With real MIDI, **handoff 20 is the best operating point**. See *The handoff sweep* below.
 > - **Results PDFs** (built on the Windows machine, not in git): `Results_Summary_All_85ep_Models.pdf` (one page) and `Results_Summary_With_Handoff_Sweep.pdf` (three pages) in the Windows project folder; their generator is `report_generators/make_report_3pages.py` beside them.
 > - **Why EnCodec-FAD and CLAP-FAD disagree: investigated 2026-10-18/19.** Both are stable and the disagreement is real. CLAP reacts mostly to the pipeline's artifacts; EnCodec is robust to them but can miss leftover source instruments. EnCodec-FAD is the primary timbre metric (it is the paper's); CLAP is left out of the project book. A blind listening test is built and waiting for Shlomo's answers. See *Why the two FADs disagree* below.
-> - **Roll swap, 2026-10-19: code pushed, run pending.** Why does generated merged MIDI have the worst FAD (6.13 against 3.69)? Each σmax=100 merged bridge runs with the other kind of roll, plus a roll-error comparison and a false-note diagnosis. See *The roll swap* below. Shlomo may put it in the book.
+> - **Roll swap, done 2026-10-20: the FAD gap of generated MIDI follows the WEIGHTS, not the roll.** Generated-trained models score 6.11 even with the real roll; real-trained models score 3.30 even with a generated roll. The train/test mismatch the book names as the likely cause is refuted. See *The roll swap* below. The book's sentence on it needs correcting, and Shlomo edits the book himself.
 > - **Project book written, 2026-10-19** (Windows only, not in git): `project_book/` beside this repo, English LaTeX, 38 pages, compiled on Overleaf. See *Project book* near the end.
 > - **Evaluation data selection: DONE and pushed** (`43ad350`). `evaluation/make_eval_pools.py` derives the three candidate pools from `tools/splits.csv`; see *Evaluation* below and `docs/METRICS_HANDOFF.md` §3l.
 > - **Inference on audio from outside the dataset: code written, NOT yet committed.** See *Running on audio from outside the dataset* below.
@@ -846,7 +846,7 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 26. **Identity-floor FAD** — the FAD of the identity outputs (`Outputs/WAV_files/identity_test`) against the reference: the best score this pipeline can reach, for both embeddings. Not run.
 27. **Frame-level EnCodec-FAD with fadtk**, to make our numbers comparable with the paper's Table I. Not run.
 28. **Correct the stale CLAP line** ("a ranking at most") in the results PDFs and in the docstrings of `compute_clap_fad_200.py`.
-29. **Roll swap.** Code pushed 2026-10-19, run pending on GPUs 5, 6, 7 (see *The roll swap*). When `REPORT.md` exists, fill in the result there. If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
+29. ~~Roll swap~~ ✅ 2026-10-20: the FAD gap follows the weights (see *The roll swap*). Still to do: correct the book's "likely cause" sentences (`06_results.tex` ~143, `07_discussion.tex` ~42, `08_conclusions.tex` ~35), which Shlomo edits himself. Optional: crossed pairs to tell source from target. If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
 
 ---
 
@@ -978,7 +978,7 @@ Set B: 200 clips held out by the stacked AND the merged models (paired content m
 | merged, real | 100 | 0.500 | 64% | 3.69 |
 | merged, generated | 100 | 0.453 | 58% | 6.13 |
 
-Paired note-F1 differences (5,000-resample bootstrap, all intervals exclude zero): merged − stacked −0.025 [−0.032, −0.018] at σ 5 and −0.039 [−0.048, −0.030] at σ 100; generated − real merged −0.027 and −0.047. For context, no MIDI on set A: 67% (σ 5) and 34% (σ 100) of ceiling — so even generated merged MIDI keeps most of the MIDI benefit. `valid_loss` barely moves (flute+bassoon σ 5: 0.586 stacked, 0.587 merged real, 0.588 merged generated) and says nothing about melody. Likely cause of the generated-MIDI timbre gap, unproven: the target model trained on basic-pitch transcriptions of violin + cello but is given transcriptions of flute + bassoon, whose errors differ (flute draws octave errors).
+Paired note-F1 differences (5,000-resample bootstrap, all intervals exclude zero): merged − stacked −0.025 [−0.032, −0.018] at σ 5 and −0.039 [−0.048, −0.030] at σ 100; generated − real merged −0.027 and −0.047. For context, no MIDI on set A: 67% (σ 5) and 34% (σ 100) of ceiling — so even generated merged MIDI keeps most of the MIDI benefit. `valid_loss` barely moves (flute+bassoon σ 5: 0.586 stacked, 0.587 merged real, 0.588 merged generated) and says nothing about melody. The suspected cause of the generated-MIDI timbre gap, a mismatch between violin + cello training rolls and flute + bassoon test rolls, was **refuted by the roll swap** (2026-10-20, below): the gap follows the weights.
 
 The single-stem basic-pitch scripts were fixed on the same day: `--fps` defaulted to 50 while training reads 75, the tool's errors went to `/dev/null`, and `basic-pitch` was taken from `PATH` rather than the venv. Both now go through `midi_preprocessing/basic_pitch_cli.py` — which still needs the official tool, not installed in `venv_yuval`.
 
@@ -1028,7 +1028,28 @@ GPUS="5 6 7" setsid nohup bash evaluation/run_roll_swap.sh > Outputs/roll_swap.l
 - **FAD check:** the report recomputes the FAD of the two originals from the cached embeddings and refuses to continue if they do not reproduce 3.69 and 6.13.
 - **FAD spread:** the report gives the book's ±, 50 joint resamples. It also gives P(A < B) with the same draws for all four conditions.
 
-**Result:** pending.
+**Result (2026-10-20, `roll_swap/REPORT.md`).** Note F1 / % of ceiling / EnCodec-FAD ± SD:
+
+| models trained on | roll at test time | note F1 | % | est./ref. notes | EnCodec-FAD |
+|---|---|---|---|---|---|
+| real | real | 0.500 | 64% | 1.41 | 3.69 ± 0.13 |
+| generated | generated | 0.453 | 58% | 1.44 | 6.13 ± 0.26 |
+| real | generated | 0.471 | 60% | 1.39 | **3.30 ± 0.13** |
+| generated | real | 0.460 | 59% | 1.43 | 6.11 ± 0.27 |
+
+- **FAD follows the weights.** Generated-trained models stay at about 6.1 with either roll (P = 0.66, a tie). Real-trained models get *better* with a generated roll (3.30 against 3.69, P = 1.00). So the gap is learned in training. It is not caused by the roll the model is given at test time, and the mismatch hypothesis is refuted as its cause.
+- **Note F1 follows both, a little:**
+  - A generated roll costs the real-trained models 0.029 [0.020, 0.038].
+  - Real-trained models beat generated-trained ones by 0.018–0.040 with either roll.
+  - A real roll helps the generated-trained models by only 0.007.
+- **Note density is the same in all four** (1.39–1.44 estimated notes per reference note). The FAD gap is therefore not "more notes", which points to what EnCodec hears as timbre.
+- **Practical:** for a recording without a score, the real-trained models with a generated roll beat the generated-trained models on both axes (F1 +0.018, FAD 3.30 against 6.13).
+- **The rolls do differ between ensembles, as suspected; it just is not the cause.**
+  - Flute + bassoon generated rolls: precision 0.787, recall 0.953, 77% of extra cells are octaves.
+  - Violin + cello generated rolls: precision 0.857, recall 0.946, 56% octaves and 16% higher harmonics.
+  - Both add notes: about 2.0 notes at once become 2.4 and 2.2.
+- **False notes:** real-trained models play the roll's extra octaves (octave FP 0.070 with a generated roll against 0.039). Generated-trained models do not (0.042), as if they learned that roll octaves are not notes.
+- **Open:** which of the two bpmerged networks, source or target, carries the problem. Running crossed pairs would answer it (`--source-ckpt/--target-ckpt`, about 50 min). A hypothesis only: generated training rolls mark strong harmonics as notes, so the bpmerged models may lean on the roll for the spectral envelope.
 
 ### Metric decisions for polyphony
 
