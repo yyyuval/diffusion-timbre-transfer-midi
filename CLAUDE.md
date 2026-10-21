@@ -856,7 +856,14 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 28. **Correct the stale CLAP line** ("a ranking at most") in the results PDFs and in the docstrings of `compute_clap_fad_200.py`.
 29. ~~Roll swap~~ ✅ 2026-10-20: the FAD gap follows the weights (see *The roll swap*). Still to do: correct the book's "likely cause" sentences (`06_results.tex` ~143, `07_discussion.tex` ~42, `08_conclusions.tex` ~35), which Shlomo edits himself. Optional: crossed pairs to tell source from target.
 30. **Ear check of the roll swap.** 5 blind A/B trials: the generated-trained bridge (6.13) against the real-trained bridge given a generated roll (3.30), on the same input. Built by `evaluation/make_rollswap_listen.py`, with a reveal button per trial. Waiting for Shlomo.
-31. **Optional: the swap at handoff 20**, the best operating point with real MIDI, for the deployment recipe (real-trained models + generated roll). If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
+31. **Optional: the swap at handoff 20**, the best operating point with real MIDI, for the deployment recipe (real-trained models + generated roll).
+32. **Three-way ear check** (2026-10-21), `evaluation/run_threeway_listen.sh` → `Outputs/threeway_listen/threeway_listen.zip`. It has 15 questions in three blocks of 5. Each question plays no MIDI at σmax 5, MIDI at σmax 5 and MIDI at σmax 100 as A/B/C, and reveals the answer after a choice.
+    - **Block 1:** a separate real roll per instrument.
+    - **Block 2:** a merged real roll.
+    - **Block 3:** real-trained models given a generated roll. This uses a new pair, `swap_realtrained_genroll` (σmax 5).
+    - **Tracks:** chosen from the recovered splits so that every model in a question held them out. Blocks 2 and 3 use the no-MIDI split ∩ the merged list. The 45 clips are generated into `Outputs/threeway_listen/gen`.
+    - **`FULL_S5=1`:** also runs the σmax 5 swap on all 1,000 set-B inputs, which gives its FAD and F1 (`roll_swap/encodec_fad_s5.csv`).
+    - **Status:** waiting for Shlomo. If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
 
 ---
 

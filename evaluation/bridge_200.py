@@ -222,6 +222,7 @@ del _name, _src, _sigma, _cache, _suffix
 # cause; if it follows the weights, training on generated rolls is. Same arch,
 # so the same held-out clips as the two pairs they are built from.
 SWAP_PAIRS = {
+    "swap_realtrained_genroll": ("merged_real_midi", "midi_cache_wood_fps75_bp_merged"),
     "swap_realtrained_genroll_s100": ("merged_real_midi_s100", "midi_cache_wood_fps75_bp_merged"),
     "swap_gentrained_realroll_s100": ("merged_generated_midi_s100", "midi_cache_wood_fps75_gt_merged"),
 }
