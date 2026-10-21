@@ -7,7 +7,15 @@ This file gives Claude (or any new assistant / teammate) the full context needed
 > - **Handoff sweep done, 2026-10-18.** Every σmax=100 model at handoff 5, 20, 50, 100. With real MIDI, **handoff 20 is the best operating point**. See *The handoff sweep* below.
 > - **Results PDFs** (built on the Windows machine, not in git): `Results_Summary_All_85ep_Models.pdf` (one page) and `Results_Summary_With_Handoff_Sweep.pdf` (three pages) in the Windows project folder; their generator is `report_generators/make_report_3pages.py` beside them.
 > - **Why EnCodec-FAD and CLAP-FAD disagree: investigated 2026-10-18/19.** Both are stable and the disagreement is real. CLAP reacts mostly to the pipeline's artifacts; EnCodec is robust to them but can miss leftover source instruments. EnCodec-FAD is the primary timbre metric (it is the paper's); CLAP is left out of the project book. A blind listening test is built and waiting for Shlomo's answers. See *Why the two FADs disagree* below.
-> - **Roll swap, done 2026-10-20: the FAD gap of generated MIDI follows the WEIGHTS, not the roll.** Generated-trained models score 6.11 even with the real roll; real-trained models score 3.30 even with a generated roll. The train/test mismatch the book names as the likely cause is refuted. See *The roll swap* below. The book's sentence on it needs correcting, and Shlomo edits the book himself.
+> - **🏆 Roll swap, done 2026-10-20: the project's most practical result.** For a new recording there is no real MIDI, so the roll must be generated from the audio. For that case, EnCodec-FAD drops from **6.13 to 3.30** (−46%), and note F1 rises from 0.453 to 0.471:
+>   - 6.13 is the previous pipeline for it: models trained on generated rolls.
+>   - 3.30 is the new one: models trained on real MIDI, given a generated roll at test time.
+>
+>   **Compare with 6.13, not with 3.69.** This is Shlomo's framing, 2026-10-21. 3.69 needs real MIDI, which a real recording does not have.
+>
+>   The cause is the weights, not the roll: generated-trained models stay at 6.11 even with the real roll. The train/test mismatch the book names as the likely cause is refuted.
+>
+>   An ear check (5 trials) is being built. See *The roll swap* below. The book still has the refuted sentence, and Shlomo edits the book himself.
 > - **Project book written, 2026-10-19** (Windows only, not in git): `project_book/` beside this repo, English LaTeX, 38 pages, compiled on Overleaf. See *Project book* near the end.
 > - **Evaluation data selection: DONE and pushed** (`43ad350`). `evaluation/make_eval_pools.py` derives the three candidate pools from `tools/splits.csv`; see *Evaluation* below and `docs/METRICS_HANDOFF.md` §3l.
 > - **Inference on audio from outside the dataset: code written, NOT yet committed.** See *Running on audio from outside the dataset* below.
@@ -846,7 +854,9 @@ It also prints how far the aligned slice differs from the old frame-0 slice — 
 26. **Identity-floor FAD** — the FAD of the identity outputs (`Outputs/WAV_files/identity_test`) against the reference: the best score this pipeline can reach, for both embeddings. Not run.
 27. **Frame-level EnCodec-FAD with fadtk**, to make our numbers comparable with the paper's Table I. Not run.
 28. **Correct the stale CLAP line** ("a ranking at most") in the results PDFs and in the docstrings of `compute_clap_fad_200.py`.
-29. ~~Roll swap~~ ✅ 2026-10-20: the FAD gap follows the weights (see *The roll swap*). Still to do: correct the book's "likely cause" sentences (`06_results.tex` ~143, `07_discussion.tex` ~42, `08_conclusions.tex` ~35), which Shlomo edits himself. Optional: crossed pairs to tell source from target. If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
+29. ~~Roll swap~~ ✅ 2026-10-20: the FAD gap follows the weights (see *The roll swap*). Still to do: correct the book's "likely cause" sentences (`06_results.tex` ~143, `07_discussion.tex` ~42, `08_conclusions.tex` ~35), which Shlomo edits himself. Optional: crossed pairs to tell source from target.
+30. **Ear check of the roll swap.** 5 blind A/B trials: the generated-trained bridge (6.13) against the real-trained bridge given a generated roll (3.30), on the same input. Built by `evaluation/make_rollswap_listen.py`, with a reveal button per trial. Waiting for Shlomo.
+31. **Optional: the swap at handoff 20**, the best operating point with real MIDI, for the deployment recipe (real-trained models + generated roll). If Shlomo wants it in the book, it belongs in the results chapter (the paragraph on generated MIDI, `06_results.tex`, about line 139, which calls the mismatch "not tested here") and in the discussion.
 
 ---
 
@@ -1027,6 +1037,22 @@ GPUS="5 6 7" setsid nohup bash evaluation/run_roll_swap.sh > Outputs/roll_swap.l
 - **Output:** `Outputs/WAV_files/merged_midi_test/roll_swap/REPORT.md` and `results.csv`, written by `evaluation/report_roll_swap.py`.
 - **FAD check:** the report recomputes the FAD of the two originals from the cached embeddings and refuses to continue if they do not reproduce 3.69 and 6.13.
 - **FAD spread:** the report gives the book's ±, 50 joint resamples. It also gives P(A < B) with the same draws for all four conditions.
+
+**The headline (Shlomo, 2026-10-21): read it as a deployment result.**
+- **The situation:** someone brings a recording to convert. Nobody will have real, checked MIDI for it, so the roll can only be generated from the audio by Basic Pitch.
+- **The question:** which bridge to run on that generated roll.
+- **Before the swap:** the only answer was the models trained on generated rolls. EnCodec-FAD 6.13, note F1 0.453 (58% of the real-recording score).
+- **Now:** the models trained on real MIDI, fed the generated roll. EnCodec-FAD **3.30**, note F1 **0.471** (60%).
+- **How big it is:** FAD falls by 46%, and melody improves too (+0.018, 95% CI [+0.008, +0.028]).
+- **Against the real-MIDI rows:** 3.30 is lower than the real-trained models get with their *own* real roll (3.69). It is not far from the best real-MIDI result on set B, a separate real roll per instrument at 2.94.
+- **The practical recipe:** train on real MIDI, generate the roll only at transfer time.
+
+Never present this as "3.69 → 3.30". That comparison needs real MIDI, which a real recording does not have.
+
+**Caveats to keep with it:**
+- It rests on EnCodec-FAD alone, until the ear check is done (`evaluation/make_rollswap_listen.py`, 5 blind trials).
+- It was tested only at σmax=100 and handoff 100. Handoff 20, the best point with real MIDI, was not tried for the swap.
+- The cause of the 3.69 → 3.30 gain is only a hypothesis: the roll's octave additions reinforce even harmonics.
 
 **Result (2026-10-20, `roll_swap/REPORT.md`).** Note F1 / % of ceiling / EnCodec-FAD ± SD:
 
