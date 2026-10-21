@@ -57,8 +57,46 @@ def parse_args():
     return p.parse_args()
 
 
+def clip_distances():
+    """Per-clip distance to the mean of the real violin + cello clips, in the same
+    raw EnCodec space the FAD uses, from the cached embeddings.
+
+    FAD itself exists only for a set of clips. Its mean term is the squared
+    distance between the two sets' mean embeddings; this is the per-clip
+    version of that. Also prints how much of each FAD is that mean term and
+    how much is the covariance term, which tells a consistent shift (mean)
+    from a minority of unusual clips (spread).
+    """
+    import numpy as np
+    from scipy import linalg
+
+    fad_dir = B_ROOT / "fad" / "poly"
+    ref = np.load(fad_dir / "reference_encodec.npz", allow_pickle=False)["emb"]
+    mu = ref.mean(0)
+    real = np.linalg.norm(ref - mu, axis=1)
+    out = {"real_median": float(np.median(real))}
+    print("distance to the real mean: real violin + cello clips, median %.2f (n=%d)" % (out["real_median"], len(ref)))
+    S_r = np.cov(ref, rowvar=False)
+    for exp in (OLD, NEW):
+        z = np.load(fad_dir / "generated" / ("%s_encodec.npz" % exp), allow_pickle=False)
+        X, names = z["emb"], [str(n)[:-4] for n in z["names"]]
+        d = np.linalg.norm(X - mu, axis=1)
+        order = np.argsort(np.argsort(d))           # 0 = closest
+        out[exp] = {"median": float(np.median(d)),
+                    "clips": {n: (float(v), 100.0 * (len(d) - 1 - o) / (len(d) - 1))
+                              for n, v, o in zip(names, d, order)}}
+        S_g = np.cov(X, rowvar=False)
+        mean_term = float(np.sum((X.mean(0) - mu) ** 2))
+        cov_term = float(np.trace(S_r + S_g - 2 * linalg.sqrtm(S_r @ S_g).real))
+        print("%-31s FAD %.2f = mean term %.2f + spread term %.2f | clip distance median %.2f, "
+              "90th pct %.2f, max %.2f" % (exp, mean_term + cov_term, mean_term, cov_term,
+                                           np.median(d), np.percentile(d, 90), d.max()))
+    return out
+
+
 def main():
     args = parse_args()
+    dist = clip_distances()
     gen = {}
     for exp in (OLD, NEW):
         d = B_ROOT / "fad" / "poly" / "generated" / exp
@@ -90,7 +128,8 @@ def main():
             x, sr = load_mono(src)
             write_wav16(audio_dir / ("%s_%s.wav" % (t["id"], slot)), level_match(x)[0], sr)
         trials.append(t)
-        print("%s  %s   A = %s   B = %s" % (t["id"], sid, a, b))
+        print("%s  %s   A = %s (%.2f, closer than %.0f%% of its clips)   B = %s (%.2f, %.0f%%)"
+              % (t["id"], sid, a, *dist[a]["clips"][sid], b, *dist[b]["clips"][sid]))
 
     with (out / "key.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -100,8 +139,10 @@ def main():
 
     style = re.search(r"<style>.*?</style>", BLIND_PAGE, re.S).group(0)
     page = PAGE.replace("__STYLE__", style).replace("__BUILD__", build_id).replace("__TRIALS__", json.dumps(
-        [dict(id=t["id"], A=LABEL[t["A"]], B=LABEL[t["B"]], newSlot="A" if t["A"] == NEW else "B")
-         for t in trials], ensure_ascii=False))
+        [dict(id=t["id"], A=LABEL[t["A"]], B=LABEL[t["B"]], newSlot="A" if t["A"] == NEW else "B",
+              dA=dist[t["A"]]["clips"][t["sample_id"]], dB=dist[t["B"]]["clips"][t["sample_id"]],
+              medA=dist[t["A"]]["median"], medB=dist[t["B"]]["median"])
+         for t in trials], ensure_ascii=False)).replace("__REAL_MEDIAN__", "%.2f" % dist["real_median"])
     (out / "rollswap_listen" / "index.html").write_text(page, encoding="utf-8")
     zip_path = shutil.make_archive(str(out / "rollswap_listen"), "zip", root_dir=out, base_dir="rollswap_listen")
     print("\n%d trials -> %s  (%.0f MB)" % (len(trials), zip_path, Path(zip_path).stat().st_size / 1e6))
@@ -160,11 +201,16 @@ function player(src, label, hint) {
 function trial() {
   if (S.pos >= TRIALS.length) return finish();
   const t = TRIALS[S.pos], a = S.answers[t.id] || {};
+  const dline = (d, med) => `מרחק הקטע הזה: <b>${d[0].toFixed(2)}</b> · קרוב יותר מ־${Math.round(d[1])} אחוז מ־1,000 הקטעים של המודל (חציון המודל ${med.toFixed(2)})`;
   const reveal = a.revealed ? `<div class="reveal">
-      <div><b>A</b>: ${t.A}</div><div><b>B</b>: ${t.B}</div>
+      <div><b>A</b>: ${t.A}</div><div class="muted">${dline(t.dA, t.medA)}</div>
+      <div style="margin-top:6px"><b>B</b>: ${t.B}</div><div class="muted">${dline(t.dB, t.medB)}</div>
       <div style="margin-top:6px">${a.choice === t.newSlot
         ? '<span class="hit">בחרת במודל שאומן על MIDI אמיתי – כמו ה־FAD.</span>'
-        : 'בחרת במודל שאומן על MIDI מגונרט – ההפך מה־FAD.'}</div></div>` : "";
+        : 'בחרת במודל שאומן על MIDI מגונרט – ההפך מה־FAD.'}</div>
+      <div class="muted" style="margin-top:6px;font-size:.9rem">FAD קיים רק לאוסף של קטעים, לא לקטע בודד. "מרחק" הוא המרחק של הקטע
+        מהממוצע של הקלטות כינור וצ׳לו אמיתיות, באותו מרחב של EnCodec שה־FAD משתמש בו. נמוך יותר = קרוב יותר.
+        הקלטה אמיתית טיפוסית נמצאת במרחק __REAL_MEDIAN__.</div></div>` : "";
   app.innerHTML = `
     <div class="row"><b>ניסיון ${S.pos + 1} מתוך ${TRIALS.length}</b><span class="muted">נענו ${answered()}</span></div>
     <div class="progress"><div style="width:${100 * answered() / TRIALS.length}%"></div></div>
